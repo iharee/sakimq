@@ -1,29 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-
     <parent>
         <groupId>com.arth</groupId>
-        <artifactId>sakimq</artifactId>
+        <artifactId>sakimq-parent</artifactId>
         <version>1.0-SNAPSHOT</version>
     </parent>
-
     <artifactId>sakimq-common</artifactId>
-
-    <dependencies>
-        <dependency>
-            <groupId>com.arth</groupId>
-            <artifactId>sakimq-protocol</artifactId>
-            <version>1.0-SNAPSHOT</version>
-            <scope>compile</scope>
-        </dependency>
-
-        <!-- Disruptor 4.0 removed the implementation of WorkHandler,
-        which had been instrumental in easily implementing Consumer Groups.
-        Therefore, we are considering the legacy version released in 2021
-        instead of the latest version launched in 2023. -->
-    </dependencies>
-
 </project>

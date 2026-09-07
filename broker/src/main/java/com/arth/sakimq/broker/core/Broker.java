@@ -1,32 +1,19 @@
 package com.arth.sakimq.broker.core;
 
-import com.arth.sakimq.broker.store.MessageStore;
-import com.arth.sakimq.broker.store.OffsetManager;
-import com.arth.sakimq.broker.topic.TopicsManager;
-import com.arth.sakimq.network.netty.NettyServer;
+import java.time.Duration;
+import java.util.Optional;
+import com.arth.sakimq.model.Delivery;
+import com.arth.sakimq.model.QueueStats;
 
 public interface Broker {
-    void start() throws Exception;
 
-    void shutdown() throws Exception;
+    void createQueue(String queue);
 
-    int getPort();
+    String publish(String queue, byte[] body);
 
-    TopicsManager getTopicsManager();
+    Optional<Delivery> consume(String queue, Duration visibilityTimeout, Duration waitTimeout);
 
-    /**
-     * Gets the offset manager.
-     *
-     * @return the offset manager
-     */
-    OffsetManager getOffsetManager();
+    boolean ack(String queue, String receiptHandle);
 
-    /**
-     * Gets the message store.
-     *
-     * @return the message store
-     */
-    MessageStore getMessageStore();
-
-    NettyServer getNettyServer();
+    QueueStats stats(String queue);
 }

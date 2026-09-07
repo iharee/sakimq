@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package sakimq;
+
+option java_multiple_files = true;
+option java_package = "com.arth.sakimq.protocol";
+option java_outer_classname = "MqProto";
+
+service MQService {
+  rpc CreateQueue(CreateQueueRequest) returns (CreateQueueResponse);
+  rpc Publish(PublishRequest) returns (PublishResponse);
+  rpc Consume(ConsumeRequest) returns (ConsumeResponse);
+  rpc Ack(AckRequest) returns (AckResponse);
+  rpc GetQueueStats(GetQueueStatsRequest) returns (GetQueueStatsResponse);
+}
+
+message Message {
+  string message_id = 1;
+  string queue = 2;
+  bytes body = 3;
+  int64 created_at = 4;
+}
+
+message Delivery {
+  Message message = 1;
+  string receipt_handle = 2;
+  int32 delivery_count = 3;
+}
+
+message CreateQueueRequest { string queue = 1; }
+message CreateQueueResponse { bool created = 1; }
+
+message PublishRequest {
+  string queue = 1;
+  bytes body = 2;
+}
+message PublishResponse { string message_id = 1; }
+
+message ConsumeRequest {
+  string queue = 1;
+  int64 visibility_timeout_ms = 2;
+  int64 wait_timeout_ms = 3;
+}
+message ConsumeResponse { Delivery delivery = 1; }
+
+message AckRequest {
+  string queue = 1;
+  string receipt_handle = 2;
+}
+message AckResponse { bool acknowledged = 1; }
+
+message GetQueueStatsRequest { string queue = 1; }
+message GetQueueStatsResponse { QueueStats stats = 1; }
+
+message QueueStats {
+  string queue = 1;
+  int64 ready_count = 2;
+  int64 inflight_count = 3;
+  int64 total_count = 4;
+}
+
+message WalRecord {
+  enum Type {
+    PUBLISH = 0;
+    ACK = 1;
+  }
+
+  Type type = 1;
+  string queue = 2;
+  string message_id = 3;
+  string receipt_handle = 4;
+  bytes body = 5;
+  int64 created_at = 6;
+}

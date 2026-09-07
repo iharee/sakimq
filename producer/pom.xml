@@ -8,7 +8,7 @@
         <artifactId>sakimq-parent</artifactId>
         <version>1.0-SNAPSHOT</version>
     </parent>
-    <artifactId>sakimq-broker</artifactId>
+    <artifactId>sakimq-producer</artifactId>
     <dependencies>
         <dependency>
             <groupId>com.arth</groupId>
@@ -19,10 +19,6 @@
             <groupId>com.arth</groupId>
             <artifactId>sakimq-protocol</artifactId>
             <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>io.grpc</groupId>
-            <artifactId>grpc-netty-shaded</artifactId>
         </dependency>
     </dependencies>
 </project>

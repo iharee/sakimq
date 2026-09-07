@@ -1,3 +1,0 @@
-# Producer configuration
-maxRetries: 3
-timeout: 3000

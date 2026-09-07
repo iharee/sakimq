@@ -1,6 +1,0 @@
-# Network configuration
-port: 8848
-timeout: 3
-maxFrameLength: 67108864
-lengthFieldLength: 4
-initialBytesToStrip: 4

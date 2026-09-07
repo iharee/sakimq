@@ -1,4 +1,0 @@
-# Queue configuration
-timeout: 5
-bufferSize: 1024
-consumerGroupSize: 1
