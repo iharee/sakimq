@@ -1,6 +1,7 @@
 package com.arth.sakimq.broker.config;
 
 import com.arth.sakimq.config.Config;
+import com.arth.sakimq.exception.InvalidArgumentException;
 
 import java.nio.file.Path;
 
@@ -13,7 +14,7 @@ public record MQConfig(int port, Path dataDirectory, int maxDeliveryCount) {
 
     public MQConfig {
         if (maxDeliveryCount <= 0) {
-            throw new IllegalArgumentException("maxDeliveryCount must be positive");
+            throw new InvalidArgumentException("maxDeliveryCount must be positive");
         }
     }
 

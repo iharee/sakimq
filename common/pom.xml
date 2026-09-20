@@ -20,5 +20,9 @@
             <artifactId>smallrye-config-source-yaml</artifactId>
             <version>3.12.4</version>
         </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
     </dependencies>
 </project>

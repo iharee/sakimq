@@ -1,5 +1,6 @@
 package com.arth.sakimq.producer;
 
+import com.arth.sakimq.exception.InvalidArgumentException;
 import com.arth.sakimq.protocol.CreateQueueRequest;
 import com.arth.sakimq.protocol.CreateQueueResponse;
 import com.arth.sakimq.protocol.MQServiceGrpc;
@@ -8,8 +9,12 @@ import com.arth.sakimq.protocol.PublishResponse;
 import com.google.protobuf.ByteString;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class GrpcProducer implements Producer {
+
+    private static final Logger log = LoggerFactory.getLogger(GrpcProducer.class);
 
     private static final String DEFAULT_TARGET = "localhost:50051";
 
@@ -32,19 +37,21 @@ public final class GrpcProducer implements Producer {
     @Override
     public boolean createQueue(String queue) {
         checkQueue(queue);
-        CreateQueueResponse response = stub.createQueue(CreateQueueRequest.newBuilder().setQueue(queue).build());
-        return response.getCreated();
+        boolean created = stub.createQueue(CreateQueueRequest.newBuilder().setQueue(queue).build()).getCreated();
+        log.debug("CreateQueue(queue={}) -> created={}", queue, created);
+        return created;
     }
 
     @Override
     public String publish(String queue, byte[] body) {
         checkQueue(queue);
-        if (body == null) throw new IllegalArgumentException("body must not be null");
+        if (body == null) throw new InvalidArgumentException("body must not be null");
 
         PublishResponse response = stub.publish(PublishRequest.newBuilder()
                 .setQueue(queue)
                 .setBody(ByteString.copyFrom(body))
                 .build());
+        log.debug("Published message: queue={}, messageId={}", queue, response.getMessageId());
         return response.getMessageId();
     }
 
@@ -55,7 +62,7 @@ public final class GrpcProducer implements Producer {
 
     private static void checkQueue(String queue) {
         if (queue == null || queue.isBlank()) {
-            throw new IllegalArgumentException("queue must not be blank");
+            throw new InvalidArgumentException("queue must not be blank");
         }
     }
 }

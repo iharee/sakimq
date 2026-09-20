@@ -13,10 +13,16 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import com.arth.sakimq.exception.DuplicateMessageException;
+import com.arth.sakimq.exception.InvalidArgumentException;
 import com.arth.sakimq.model.Delivery;
 import com.arth.sakimq.model.QueueStats;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class MessageQueue {
+
+    private static final Logger log = LoggerFactory.getLogger(MessageQueue.class);
 
     // 就绪消息队列
     private final Deque<QueueEntry> ready = new ArrayDeque<>();
@@ -36,7 +42,10 @@ public class MessageQueue {
 
     public synchronized String publish(Message message) {
         String id = message.messageId();
-        if (!messageIds.add(id)) throw new RuntimeException("duplicate message id: " + id);
+        if (!messageIds.add(id)) {
+            log.warn("Duplicate message rejected: id={}", id);
+            throw new DuplicateMessageException(id);
+        }
         ready.add(new QueueEntry(message));
         notifyAll();
         return id;
@@ -60,9 +69,9 @@ public class MessageQueue {
      */
     public Optional<Delivery> consume(Duration visibilityTimeout, Duration waitTimeout) {
         if (visibilityTimeout == null || visibilityTimeout.isNegative() || visibilityTimeout.isZero())
-            throw new IllegalArgumentException("invalid visibilityTimeout");
+            throw new InvalidArgumentException("invalid visibilityTimeout");
         if (waitTimeout == null || waitTimeout.isNegative())
-            throw new IllegalArgumentException("invalid waitTimeout");
+            throw new InvalidArgumentException("invalid waitTimeout");
 
         long deadline = System.nanoTime() + waitTimeout.toNanos();
 
@@ -77,6 +86,8 @@ public class MessageQueue {
                     entry.deliveryCount++;
                     if (entry.deliveryCount > maxDeliveryCount) {
                         // TODO: 死信队列
+                        log.warn("Message dropped after exceeding maxDeliveryCount: messageId={}, queue={}, deliveryCount={}, maxDeliveryCount={}",
+                                entry.message.messageId(), entry.message.queue(), entry.deliveryCount, maxDeliveryCount);
                         messageIds.remove(entry.message.messageId());
                         continue;
                     }
@@ -149,6 +160,8 @@ public class MessageQueue {
             inflight.remove(top.receiptHandle());
             ready.add(top.entry());
             requeued = true;
+            log.debug("Requeued expired message: messageId={}, queue={}, deliveryCount={}",
+                    top.entry().message.messageId(), top.entry().message.queue(), top.entry().deliveryCount);
         }
         if (requeued) notifyAll();
     }

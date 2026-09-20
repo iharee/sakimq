@@ -1,11 +1,14 @@
 package com.arth.sakimq.config;
 
+import com.arth.sakimq.exception.ConfigLoadException;
+import com.arth.sakimq.exception.InvalidArgumentException;
 import io.smallrye.config.SmallRyeConfig;
 import io.smallrye.config.SmallRyeConfigBuilder;
 import io.smallrye.config.source.yaml.YamlConfigSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -17,6 +20,8 @@ import java.time.Duration;
  * 环境变量通过 SmallRye 的 EnvConfigSource 自动映射到属性名（{@code _} / {@code .} / {@code -} 等价、大小写不敏感）
  */
 public final class Config {
+
+    private static final Logger log = LoggerFactory.getLogger(Config.class);
 
     /** YAML 源的 ordinal，低于环境变量(300)，高于代码默认值。 */
     private static final int YAML_ORDINAL = 200;
@@ -32,16 +37,24 @@ public final class Config {
         Path path = (configPath == null || configPath.isBlank())
                 ? Path.of("sakimq.yaml")
                 : Path.of(configPath);
+        log.debug("Loading config from path: {}", path);
 
         // 系统属性(400) > 环境变量(300) > YAML(200) > 默认值
         SmallRyeConfigBuilder builder = new SmallRyeConfigBuilder().addSystemSources();
 
-        if (Files.exists(path)) {
+        if (!Files.exists(path)) {
+            if (configPath != null && !configPath.isBlank()) {
+                log.warn("Config file not found: {}, using defaults", path);
+            } else {
+                log.debug("No config file found at {}, using defaults", path);
+            }
+        } else {
             try {
                 String content = Files.readString(path);
                 builder.withSources(new YamlConfigSource("sakimq-yaml", content, YAML_ORDINAL));
             } catch (IOException e) {
-                throw new UncheckedIOException("Failed to read config file: " + path, e);
+                log.error("Failed to read config file: {}", path, e);
+                throw new ConfigLoadException("Failed to read config file: " + path, e);
             }
         }
 
@@ -72,7 +85,7 @@ public final class Config {
     private static Duration parseDuration(String value) {
         String v = value.trim();
         if (v.isEmpty()) {
-            throw new IllegalArgumentException("invalid duration: " + value);
+            throw new InvalidArgumentException("invalid duration: " + value);
         }
         if (v.charAt(0) == 'P' || v.charAt(0) == 'p') {
             return Duration.parse(v);
@@ -91,10 +104,10 @@ public final class Config {
                 case 'h' -> Duration.ofHours(amount);
                 case 'm' -> Duration.ofMinutes(amount);
                 case 's' -> Duration.ofSeconds(amount);
-                default -> throw new IllegalArgumentException("invalid duration: " + value);
+                default -> throw new InvalidArgumentException("invalid duration: " + value);
             };
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("invalid duration: " + value);
+            throw new InvalidArgumentException("invalid duration: " + value);
         }
     }
 }

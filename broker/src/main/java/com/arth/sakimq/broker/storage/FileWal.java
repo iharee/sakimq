@@ -1,14 +1,18 @@
 package com.arth.sakimq.broker.storage;
 
 import com.arth.sakimq.broker.core.Message;
+import com.arth.sakimq.exception.WalCloseException;
+import com.arth.sakimq.exception.WalOpenException;
+import com.arth.sakimq.exception.WalWriteException;
 import com.arth.sakimq.protocol.WalRecord;
 import com.google.protobuf.ByteString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.EOFException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.io.UncheckedIOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,6 +22,8 @@ import java.util.List;
 
 
 public final class FileWal implements MessageLog {
+
+    private static final Logger log = LoggerFactory.getLogger(FileWal.class);
 
     private static final String WAL_PREFIX = "mq-";
     private static final String WAL_SUFFIX = ".wal";
@@ -33,7 +39,8 @@ public final class FileWal implements MessageLog {
             Files.createDirectories(directory);
             this.out = new FileOutputStream(path.toFile(), true);
         } catch (IOException e) {
-            throw new UncheckedIOException("Failed to open WAL: " + path, e);
+            log.error("Failed to open WAL: {}", path, e);
+            throw new WalOpenException("Failed to open WAL: " + path, e);
         }
     }
 
@@ -80,12 +87,15 @@ public final class FileWal implements MessageLog {
     }
 
     private void writeRecord(WalRecord record) {
+        log.debug("WAL append: type={}, queue={}, messageId={}, deliveryCount={}",
+                record.getType(), record.getQueue(), record.getMessageId(), record.getDeliveryCount());
         try {
             record.writeDelimitedTo(out);
             out.flush();
             out.getFD().sync();  // fsync
         } catch (IOException e) {
-            throw new UncheckedIOException(e);
+            log.error("Failed to write WAL record: type={}, messageId={}", record.getType(), record.getMessageId(), e);
+            throw new WalWriteException("Failed to write WAL record", e);
         }
     }
 
@@ -97,7 +107,10 @@ public final class FileWal implements MessageLog {
      */
     @Override
     public List<WalRecord> recover() {
-        if (!Files.isDirectory(directory)) return List.of();
+        if (!Files.isDirectory(directory)) {
+            log.debug("No WAL directory found: {}, nothing to recover", directory);
+            return List.of();
+        }
         List<WalRecord> records = new ArrayList<>();
         try (DirectoryStream<Path> stream =
                  Files.newDirectoryStream(directory, WAL_PREFIX + "*" + WAL_SUFFIX)) {
@@ -109,8 +122,9 @@ public final class FileWal implements MessageLog {
             for (Path segment : segments) {
                 recoverSegment(segment, records);
             }
+            log.info("WAL recovery complete: {} records from {} segment(s)", records.size(), segments.size());
         } catch (IOException e) {
-            // 目录不可读
+            log.error("Failed to list WAL segments in directory: {}", directory, e);
         }
         return records;
     }
@@ -133,13 +147,15 @@ public final class FileWal implements MessageLog {
                     records.add(WalRecord.parseFrom(data));
                 } catch (IOException e) {
                     // 半条记录，恢复至上一条完好记录
+                    log.warn("Truncated torn WAL record in segment {}, truncating to last good offset {}",
+                            segment.getFileName(), lastGoodOffset);
                     raf.setLength(lastGoodOffset);
                     break;
                 }
                 lastGoodOffset = raf.getFilePointer();
             }
         } catch (IOException e) {
-            // 文件不可读
+            log.error("Failed to read WAL segment: {}", segment, e);
         }
     }
 
@@ -167,7 +183,8 @@ public final class FileWal implements MessageLog {
         try {
             out.close();
         } catch (IOException e) {
-            throw new UncheckedIOException(e);
+            log.error("Failed to close WAL", e);
+            throw new WalCloseException("Failed to close WAL", e);
         }
     }
 

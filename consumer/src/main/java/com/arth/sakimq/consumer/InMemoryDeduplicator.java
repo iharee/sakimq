@@ -1,7 +1,10 @@
 package com.arth.sakimq.consumer;
 
 import com.arth.sakimq.config.Config;
+import com.arth.sakimq.exception.InvalidArgumentException;
 import com.arth.sakimq.model.Delivery;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
@@ -10,6 +13,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * 内存去重器，懒移除过期消息
  */
 public final class InMemoryDeduplicator implements Deduplicator {
+
+    private static final Logger log = LoggerFactory.getLogger(InMemoryDeduplicator.class);
 
     private static final Duration DEFAULT_RETENTION = Duration.ofHours(1);
     private static final int DEFAULT_PRUNE_THRESHOLD = 10_000;
@@ -28,10 +33,10 @@ public final class InMemoryDeduplicator implements Deduplicator {
 
     public InMemoryDeduplicator(Duration retention, int pruneThreshold) {
         if (retention == null || retention.isNegative() || retention.isZero()) {
-            throw new IllegalArgumentException("invalid retention");
+            throw new InvalidArgumentException("invalid retention");
         }
         if (pruneThreshold <= 0) {
-            throw new IllegalArgumentException("pruneThreshold must be positive");
+            throw new InvalidArgumentException("pruneThreshold must be positive");
         }
         this.retention = retention;
         this.pruneThreshold = pruneThreshold;
@@ -46,13 +51,18 @@ public final class InMemoryDeduplicator implements Deduplicator {
     @Override
     public boolean isDuplicate(Delivery delivery) {
         Long at = processedAt.get(delivery.messageId());
-        return at != null && System.currentTimeMillis() - at < retention.toMillis();
+        boolean duplicate = at != null && System.currentTimeMillis() - at < retention.toMillis();
+        if (duplicate) {
+            log.debug("Dedup hit: messageId={}", delivery.messageId());
+        }
+        return duplicate;
     }
 
     @Override
     public void markCommitted(Delivery delivery) {
         // 只在业务显式 ack 成功后才应记录 messageId，否则业务失败后重投会被自动 ACK 并永久删除
         processedAt.put(delivery.messageId(), System.currentTimeMillis());
+        log.debug("Dedup committed: messageId={}", delivery.messageId());
         if (processedAt.size() > pruneThreshold) {
             prune();
         }
@@ -63,6 +73,8 @@ public final class InMemoryDeduplicator implements Deduplicator {
      */
     public void prune() {
         long cutoff = System.currentTimeMillis() - retention.toMillis();
+        int before = processedAt.size();
         processedAt.entrySet().removeIf(entry -> entry.getValue() < cutoff);
+        log.debug("Pruned {} stale dedup entries, remaining={}", before - processedAt.size(), processedAt.size());
     }
 }
