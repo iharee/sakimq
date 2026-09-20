@@ -1,6 +1,6 @@
 package com.arth.sakimq.broker.storage;
 
-import com.arth.sakimq.broker.core.MessageRecord;
+import com.arth.sakimq.broker.core.Message;
 import com.arth.sakimq.protocol.WalRecord;
 
 import java.nio.file.Path;
@@ -15,7 +15,7 @@ public final class FileWal implements MessageLog {
     }
 
     @Override
-    public void appendPublish(MessageRecord message) {
+    public void appendPublish(Message message) {
     }
 
     @Override

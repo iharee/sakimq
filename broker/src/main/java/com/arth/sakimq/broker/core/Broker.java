@@ -7,7 +7,7 @@ import com.arth.sakimq.model.QueueStats;
 
 public interface Broker {
 
-    void createQueue(String queue);
+    boolean createQueue(String queue);
 
     String publish(String queue, byte[] body);
 
