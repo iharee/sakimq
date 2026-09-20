@@ -1,0 +1,51 @@
+package com.arth.sakimq.consumer;
+
+import com.arth.sakimq.model.Delivery;
+
+import java.time.Duration;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * 内存去重器，懒移除过期消息
+ */
+public final class InMemoryDeduplicator implements Deduplicator {
+
+    private static final Duration DEFAULT_RETENTION = Duration.ofHours(1);
+    private static final int PRUNE_THRESHOLD = 10_000;
+
+    private final ConcurrentHashMap<String, Long> processedAt = new ConcurrentHashMap<>();
+    private final Duration retention;
+
+    public InMemoryDeduplicator() {
+        this(DEFAULT_RETENTION);
+    }
+
+    public InMemoryDeduplicator(Duration retention) {
+        if (retention == null || retention.isNegative() || retention.isZero()) {
+            throw new IllegalArgumentException("invalid retention");
+        }
+        this.retention = retention;
+    }
+
+    @Override
+    public boolean isDuplicate(Delivery delivery) {
+        Long at = processedAt.get(delivery.messageId());
+        return at != null && System.currentTimeMillis() - at < retention.toMillis();
+    }
+
+    @Override
+    public void markProcessed(Delivery delivery) {
+        processedAt.put(delivery.messageId(), System.currentTimeMillis());
+        if (processedAt.size() > PRUNE_THRESHOLD) {
+            prune();
+        }
+    }
+
+    /**
+     * 清理已超过 retention 的记录，防止内存无限增长
+     */
+    public void prune() {
+        long cutoff = System.currentTimeMillis() - retention.toMillis();
+        processedAt.entrySet().removeIf(entry -> entry.getValue() < cutoff);
+    }
+}

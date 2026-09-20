@@ -20,5 +20,9 @@
             <artifactId>sakimq-protocol</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty-shaded</artifactId>
+        </dependency>
     </dependencies>
 </project>
