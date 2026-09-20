@@ -1,6 +1,7 @@
 package com.arth.sakimq.producer;
 
 import com.arth.sakimq.protocol.CreateQueueRequest;
+import com.arth.sakimq.protocol.CreateQueueResponse;
 import com.arth.sakimq.protocol.MQServiceGrpc;
 import com.arth.sakimq.protocol.PublishRequest;
 import com.arth.sakimq.protocol.PublishResponse;
@@ -31,9 +32,8 @@ public final class GrpcProducer implements Producer {
     @Override
     public boolean createQueue(String queue) {
         checkQueue(queue);
-        // Broker 端当前不返回真实的创建结果，RPC 成功即视为队列可用
-        stub.createQueue(CreateQueueRequest.newBuilder().setQueue(queue).build());
-        return true;
+        CreateQueueResponse response = stub.createQueue(CreateQueueRequest.newBuilder().setQueue(queue).build());
+        return response.getCreated();
     }
 
     @Override

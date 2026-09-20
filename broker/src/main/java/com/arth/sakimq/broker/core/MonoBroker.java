@@ -1,6 +1,7 @@
 package com.arth.sakimq.broker.core;
 
 import com.arth.sakimq.broker.config.MQConfig;
+import com.arth.sakimq.broker.storage.MessageLog;
 import com.arth.sakimq.model.Delivery;
 import com.arth.sakimq.model.QueueStats;
 
@@ -13,13 +14,19 @@ public final class MonoBroker implements Broker {
 
     private final ConcurrentHashMap<String, MessageQueue> queues = new ConcurrentHashMap<>();
     private final int maxDeliveryCount;
+    private final MessageLog wal;
 
     public MonoBroker() {
-        this(MQConfig.defaults());
+        this(MQConfig.defaults(), null);
     }
 
     public MonoBroker(MQConfig config) {
+        this(config, null);
+    }
+
+    public MonoBroker(MQConfig config, MessageLog wal) {
         this.maxDeliveryCount = config.maxDeliveryCount();
+        this.wal = wal;
     }
 
     @Override
@@ -32,7 +39,10 @@ public final class MonoBroker implements Broker {
         MessageQueue mq = queues.get(queue);
         if (mq == null) throw new IllegalArgumentException("Queue does not exist: " + queue);
         String id = UUID.randomUUID().toString();
-        mq.publish(Message.of(id, queue, body));
+        Message message = Message.of(id, queue, body);
+        // 先写 WAL 再入内存：WAL 写失败则本次发布不生效
+        if (wal != null) wal.appendPublish(message);
+        mq.publish(message);
         return id;
     }
 
@@ -47,7 +57,11 @@ public final class MonoBroker implements Broker {
     public boolean ack(String queue, String receiptHandle) {
         MessageQueue mq = queues.get(queue);
         if (mq == null) throw new IllegalArgumentException("Queue does not exist: " + queue);
-        return mq.ack(receiptHandle);
+        Optional<String> messageId = mq.ack(receiptHandle);
+        messageId.ifPresent(id -> {
+            if (wal != null) wal.appendAck(queue, id);
+        });
+        return messageId.isPresent();
     }
 
     @Override
@@ -55,5 +69,11 @@ public final class MonoBroker implements Broker {
         MessageQueue mq = queues.get(queue);
         if (mq == null) return QueueStats.empty(queue);
         return mq.stats(queue);
+    }
+
+    @Override
+    public void restore(Message message) {
+        MessageQueue mq = queues.computeIfAbsent(message.queue(), k -> new MessageQueue(maxDeliveryCount));
+        mq.publish(message);
     }
 }

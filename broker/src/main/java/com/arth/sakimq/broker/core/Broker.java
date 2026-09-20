@@ -16,4 +16,6 @@ public interface Broker {
     boolean ack(String queue, String receiptHandle);
 
     QueueStats stats(String queue);
+
+    void restore(Message message);
 }

@@ -65,7 +65,7 @@ public final class GrpcConsumer implements Consumer {
 
             Delivery delivery = toDelivery(response.getDelivery());
             if (deduplicator != null && deduplicator.isDuplicate(delivery)) {
-                // 已处理过的重复消息：直接 ack，避免 broker 反复重投
+                // 已处理过的重复消息直接 ack
                 ack(queue, delivery.receiptHandle());
                 continue;
             }

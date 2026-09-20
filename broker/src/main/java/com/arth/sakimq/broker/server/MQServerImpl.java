@@ -27,7 +27,8 @@ public final class MQServerImpl implements MQServer {
     }
 
     public static MQServerImpl create(MQConfig config) throws IOException {
-        return create(config, new MonoBroker(config));
+        MessageLog wal = new FileWal(config.dataDirectory().resolve("mq.wal"));
+        return create(config, new MonoBroker(config, wal), wal);
     }
 
     public static MQServerImpl create(MQConfig config, Broker broker) throws IOException {

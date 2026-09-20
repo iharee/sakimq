@@ -68,7 +68,6 @@ message WalRecord {
   Type type = 1;
   string queue = 2;
   string message_id = 3;
-  string receipt_handle = 4;
-  bytes body = 5;
-  int64 created_at = 6;
+  bytes body = 4;
+  int64 created_at = 5;
 }

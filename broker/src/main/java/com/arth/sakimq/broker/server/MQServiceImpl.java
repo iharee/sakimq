@@ -35,8 +35,8 @@ public class MQServiceImpl extends MQServiceGrpc.MQServiceImplBase {
     @Override
     public void createQueue(CreateQueueRequest request,
                             StreamObserver<CreateQueueResponse> responseObserver) {
-        broker.createQueue(request.getQueue());
-        responseObserver.onNext(CreateQueueResponse.getDefaultInstance());
+        boolean created = broker.createQueue(request.getQueue());
+        responseObserver.onNext(CreateQueueResponse.newBuilder().setCreated(created).build());
         responseObserver.onCompleted();
     }
 

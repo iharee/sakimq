@@ -9,7 +9,7 @@ public interface MessageLog extends AutoCloseable {
 
     void appendPublish(Message message);
 
-    void appendAck(String queue, String receiptHandle);
+    void appendAck(String queue, String messageId);
 
     List<WalRecord> recover();
 
