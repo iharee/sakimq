@@ -1,34 +1,25 @@
 package com.arth.sakimq.broker.server;
 
-import io.grpc.Server;
-import io.grpc.ServerBuilder;
-import com.arth.sakimq.broker.config.MQConfig;
-import com.arth.sakimq.broker.core.Broker;
-import com.arth.sakimq.broker.core.MonoBroker;
-import com.arth.sakimq.broker.storage.FileWal;
-import com.arth.sakimq.broker.storage.MessageLog;
-import com.arth.sakimq.broker.storage.Recovery;
-
 import java.io.IOException;
 
-public final class MQServer {
+/**
+ * 将 Broker 核心暴露为 gRPC 服务
+ */
+public interface MQServer extends AutoCloseable {
 
-    private MQServer() {
-    }
+    void start() throws IOException;
 
-    public static void main(String[] args) throws IOException, InterruptedException {
-        MQConfig config = MQConfig.defaults();
-        Broker broker = new MonoBroker(config);
+    /**
+     * 阻塞当前线程，直到 server 终止，例如收到关闭信号
+     *
+     * @throws InterruptedException 线程中断异常
+     */
+    void awaitTermination() throws InterruptedException;
 
-        try (MessageLog wal = new FileWal(config.dataDirectory().resolve("mq.wal"))) {
-            Recovery.recover(wal, broker);
+    void shutdown();
 
-            Server server = ServerBuilder.forPort(config.port())
-                    .addService(new MQServiceImpl(broker))
-                    .build()
-                    .start();
+    int port();
 
-            server.awaitTermination();
-        }
-    }
+    @Override
+    void close();
 }

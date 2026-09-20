@@ -2,6 +2,7 @@ package com.arth.sakimq.broker.server;
 
 import io.grpc.stub.StreamObserver;
 import com.arth.sakimq.broker.core.Broker;
+import com.arth.sakimq.broker.core.MonoBroker;
 import com.arth.sakimq.protocol.AckRequest;
 import com.arth.sakimq.protocol.AckResponse;
 import com.arth.sakimq.protocol.ConsumeRequest;
@@ -24,8 +25,7 @@ public class MQServiceImpl extends MQServiceGrpc.MQServiceImplBase {
     private final Broker broker;
 
     public MQServiceImpl() {
-        this(new Broker() {
-        });
+        this(new MonoBroker());
     }
 
     public MQServiceImpl(Broker broker) {
