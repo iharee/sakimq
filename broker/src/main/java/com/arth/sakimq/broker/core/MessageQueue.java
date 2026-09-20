@@ -56,10 +56,9 @@ public class MessageQueue {
      * 将消息放回就绪队列并还原其投递计数，用于恢复消息。
      * 与 publish 不同，恢复期的异常记录只告警不抛异常，避免 WAL 中的异常记录导致启动失败。
      *
-     * @return 是否真的放回了就绪队列；毒消息与重复 messageId 返回 false（已告警）
+     * @return 是否真的放回了就绪队列；非法消息与重复 messageId 返回 false（已告警）
      */
     public synchronized boolean restore(Message message, int deliveryCount) {
-        // 已达到最大投递次数的毒消息不复活：恢复后下一次 consume 仍会被丢弃，直接跳过并告警
         if (deliveryCount >= maxDeliveryCount) {
             log.warn("Skipping restore of poison message: messageId={}, queue={}, deliveryCount={}, maxDeliveryCount={}",
                     message.messageId(), message.queue(), deliveryCount, maxDeliveryCount);

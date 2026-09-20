@@ -38,11 +38,6 @@ public final class MQServerImpl implements MQServer {
         return create(config, new MonoBroker(config, wal), wal);
     }
 
-    /**
-     * 使用自定义 Broker 与 WAL 创建服务器。
-     * <p>调用方必须保证 {@code broker} 已绑定到同一个 {@code wal}（例如通过 {@code new MonoBroker(config, wal)}），
-     * 否则恢复只读 WAL、运行期新请求不落盘，重启后会丢失数据。</p>
-     */
     public static MQServerImpl create(MQConfig config, Broker broker, MessageLog wal) {
         return new MQServerImpl(config, broker, wal);
     }

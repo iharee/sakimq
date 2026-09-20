@@ -30,7 +30,11 @@ public final class FileWal implements MessageLog {
     private static final String WAL_SUFFIX = ".wal";
     /** 38b5f7b 之前的单文件 WAL，恢复时作为最老的一段处理 */
     private static final String LEGACY_WAL_NAME = "mq.wal";
-    /** 单条记录上限，防止损坏的长度前缀导致超大数组分配 */
+    /**
+     * 单条记录上限，防止损坏的长度前缀导致超大数组分配。
+     * 写入侧同样受此限制，因此超限记录只可能来自更早的版本（那时没有上限），恢复时会 fail closed 拒绝启动；
+     * 这是刻意的兼容性边界：唯一的替代上界是文件长度，等于允许损坏的长度前缀按文件大小分配数组。
+     */
     private static final int MAX_WAL_RECORD_SIZE = 64 * 1024 * 1024;
 
     private final Path directory;
@@ -75,6 +79,36 @@ public final class FileWal implements MessageLog {
             }
         }
         return max + 1;
+    }
+
+    /**
+     * 校验记录的业务不变量。损坏的记录可能"刚好还能 parse 成 protobuf"（位翻转落在 enum、空字段或长度上），
+     * 只靠 parseFrom 发现不了；放行的话会静默产生幽灵消息、空名队列，因此一律 fail closed。
+     * <p>下列不变量与写入侧一一对应：四种 append 都带非空 queue，PUBLISH/ACK/DELIVERY 另带非空 messageId，
+     * DELIVERY 的 deliveryCount 至少为 1。</p>
+     */
+    private static void validateRecord(WalRecord record) {
+        if (record.getType() == WalRecord.Type.UNRECOGNIZED) {
+            throw new WalRecoveryException("Unknown WAL record type: " + record.getTypeValue());
+        }
+        requireNonBlank(record.getQueue(), "queue", record);
+        switch (record.getType()) {
+            case PUBLISH, ACK, DELIVERY -> {
+                requireNonBlank(record.getMessageId(), "messageId", record);
+                if (record.getType() == WalRecord.Type.DELIVERY && record.getDeliveryCount() <= 0) {
+                    throw new WalRecoveryException("WAL DELIVERY record with non-positive deliveryCount: "
+                            + record.getDeliveryCount());
+                }
+            }
+            default -> {
+            }
+        }
+    }
+
+    private static void requireNonBlank(String value, String field, WalRecord record) {
+        if (value == null || value.isBlank()) {
+            throw new WalRecoveryException("WAL " + record.getType() + " record with blank " + field);
+        }
     }
 
     @Override
@@ -206,15 +240,19 @@ public final class FileWal implements MessageLog {
                 }
                 try {
                     int size = readRawVarint32(raf);
-                    if (size < 0 || raf.getFilePointer() + size > raf.length()) {
-                        throw new EOFException("truncated WAL record");
+                    // 长度前缀本身非法（0 / 负数 / 超上限）：正确写入的记录不可能为空，也不超过上限，
+                    // 因此属于损坏而非崩溃残留，不能落到下面按 torn tail 截断的分支
+                    if (size <= 0 || size > MAX_WAL_RECORD_SIZE) {
+                        throw new IOException("invalid WAL record size: " + size);
                     }
-                    if (size > MAX_WAL_RECORD_SIZE) {
-                        throw new IOException("WAL record size " + size + " exceeds limit " + MAX_WAL_RECORD_SIZE);
+                    if (raf.getFilePointer() + size > raf.length()) {
+                        throw new EOFException("truncated WAL record");
                     }
                     byte[] data = new byte[size];
                     raf.readFully(data);
-                    records.add(WalRecord.parseFrom(data));
+                    WalRecord record = WalRecord.parseFrom(data);
+                    validateRecord(record);
+                    records.add(record);
                 } catch (EOFException e) {
                     if (!truncatable) {
                         // 非活动段出现半条记录：截断会连同其后的有效记录一起静默删除，fail closed
@@ -255,8 +293,9 @@ public final class FileWal implements MessageLog {
         int result = 0;
         for (int shift = 0; shift < 32; shift += 7) {
             int b = in.readUnsignedByte();
-            // 第 5 个字节只能贡献 bits 28-31；payload 超出 0x0F 或仍带 continuation bit 均超出 32 位，视为损坏
-            if (shift == 28 && (b & 0xF0) != 0) {
+            // 长度必须非负，第 5 个字节只能贡献 bits 28-30（payload <= 0x07）；
+            // 0x08 起会把符号位置 1 变成负数，0x10 起或仍带 continuation bit 均超出 32 位，一律视为损坏
+            if (shift == 28 && (b & 0xF8) != 0) {
                 throw new IOException("malformed varint");
             }
             result |= (b & 0x7F) << shift;

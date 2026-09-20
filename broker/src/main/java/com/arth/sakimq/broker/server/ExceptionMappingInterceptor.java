@@ -16,14 +16,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 
 /**
- * 把业务异常映射为语义化的 gRPC {@link Status}。
- * <p>未映射的 {@link RuntimeException} 默认会被 gRPC 转成 {@code UNKNOWN}，客户端无法区分
- * "队列不存在" / "重复消息" / "参数非法"，因此服务方法抛出的 {@code SakimqException} 在此统一转换。</p>
- * <p>注意：映射结果必须通过 {@link ServerCall#close} 下发，不能从 {@code onHalfClose} 抛出。
- * 任何逃逸出 listener 的异常都会被 grpc-core 的
- * {@code ServerImpl.JumpToApplicationThreadServerStreamListener.internalClose}
- * 统一转成 {@code UNKNOWN: Application error processing RPC}，客户端拿不到映射后的状态。</p>
- * <p>只覆盖 unary 调用（{@code onHalfClose}）；当前 MQService 全部为 unary。</p>
+ * 把业务异常映射为语义化的 gRPC {@link Status}
  */
 public final class ExceptionMappingInterceptor implements ServerInterceptor {
 
@@ -52,7 +45,6 @@ public final class ExceptionMappingInterceptor implements ServerInterceptor {
         try {
             call.close(status, new Metadata());
         } catch (IllegalStateException alreadyClosed) {
-            // 业务侧已经结束调用（如先 onCompleted 再抛异常），状态已下发，无需处理
             log.warn("Call already closed, dropping mapped status {}", status.getCode());
         }
     }

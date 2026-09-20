@@ -2,6 +2,7 @@ package com.arth.sakimq.broker.core;
 
 import com.arth.sakimq.broker.config.MQConfig;
 import com.arth.sakimq.broker.storage.MessageLog;
+import com.arth.sakimq.exception.InvalidArgumentException;
 import com.arth.sakimq.exception.QueueNotFoundException;
 import com.arth.sakimq.model.Delivery;
 import com.arth.sakimq.model.QueueStats;
@@ -12,6 +13,8 @@ import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 public final class MonoBroker implements Broker {
 
@@ -20,8 +23,7 @@ public final class MonoBroker implements Broker {
     private final ConcurrentHashMap<String, MessageQueue> queues = new ConcurrentHashMap<>();
     private final int maxDeliveryCount;
     private final MessageLog wal;
-    // 串行化 createQueue 的 check → WAL → put，队列创建是低频操作，全局锁开销可忽略
-    private final Object createQueueLock = new Object();
+    private final Lock createQueueLock = new ReentrantLock();
 
     public MonoBroker() {
         this(MQConfig.defaults(), null);
@@ -36,10 +38,17 @@ public final class MonoBroker implements Broker {
         this.wal = wal;
     }
 
+    private static void requireQueue(String queue) {
+        if (queue == null || queue.isBlank()) {
+            throw new InvalidArgumentException("queue must not be blank");
+        }
+    }
+
     @Override
     public boolean createQueue(String queue) {
-        // 串行化 check → WAL → put，避免并发 createQueue 产生重复 CREATE_QUEUE WAL 记录
-        synchronized (createQueueLock) {
+        requireQueue(queue);
+        createQueueLock.lock();
+        try {
             if (queues.containsKey(queue)) {
                 log.debug("Queue already exists: {}", queue);
                 return false;
@@ -49,11 +58,14 @@ public final class MonoBroker implements Broker {
             queues.put(queue, new MessageQueue(maxDeliveryCount));
             log.info("Queue created: {}", queue);
             return true;
+        } finally {
+            createQueueLock.unlock();
         }
     }
 
     @Override
     public String publish(String queue, byte[] body) {
+        requireQueue(queue);
         MessageQueue mq = queues.get(queue);
         if (mq == null) {
             log.debug("Publish rejected: queue not found: {}", queue);
@@ -70,6 +82,7 @@ public final class MonoBroker implements Broker {
 
     @Override
     public Optional<Delivery> consume(String queue, Duration visibilityTimeout, Duration waitTimeout) {
+        requireQueue(queue);
         MessageQueue mq = queues.get(queue);
         if (mq == null) {
             log.debug("Consume rejected: queue not found: {}", queue);
@@ -87,6 +100,7 @@ public final class MonoBroker implements Broker {
 
     @Override
     public boolean ack(String queue, String receiptHandle) {
+        requireQueue(queue);
         MessageQueue mq = queues.get(queue);
         if (mq == null) {
             log.debug("Ack rejected: queue not found: {}", queue);
@@ -112,6 +126,7 @@ public final class MonoBroker implements Broker {
 
     @Override
     public QueueStats stats(String queue) {
+        requireQueue(queue);
         MessageQueue mq = queues.get(queue);
         if (mq == null) return QueueStats.empty(queue);
         return mq.stats(queue);

@@ -1,6 +1,8 @@
 # YAML 配置文件路径由 SAKIMQ_CONFIG 指定，缺省为工作目录下的 sakimq.yaml
 # 环境变量优先级高于配置文件
 # 时长格式支持 500ms / 30s / 5m / 2h / 1d，无单位视为 ms
+#
+# 日志等级通过环境变量指定，默认 INFO：export SAKIMQ_LOG_LEVEL=DEBUG
 
 sakimq:
   broker:

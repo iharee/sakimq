@@ -19,7 +19,10 @@ public final class InMemoryDeduplicator implements Deduplicator {
     private static final Duration DEFAULT_RETENTION = Duration.ofHours(1);
     private static final int DEFAULT_PRUNE_THRESHOLD = 10_000;
 
-    private final ConcurrentHashMap<String, Long> processedAt = new ConcurrentHashMap<>();
+    private record MessageKey(String queue, String messageId) {
+    }
+
+    private final ConcurrentHashMap<MessageKey, Long> processedAt = new ConcurrentHashMap<>();
     private final Duration retention;
     private final int pruneThreshold;
 
@@ -50,20 +53,20 @@ public final class InMemoryDeduplicator implements Deduplicator {
 
     @Override
     public boolean isDuplicate(Delivery delivery) {
-        Long at = processedAt.get(delivery.messageId());
+        Long at = processedAt.get(new MessageKey(delivery.queue(), delivery.messageId()));
         boolean duplicate = at != null && System.currentTimeMillis() - at < retention.toMillis();
         if (duplicate) {
-            log.debug("Dedup hit: messageId={}", delivery.messageId());
+            log.debug("Dedup hit: queue={}, messageId={}", delivery.queue(), delivery.messageId());
         }
         return duplicate;
     }
 
     @Override
     public void markCommitted(Delivery delivery) {
-        // 只在业务显式调用 ack 后记录 messageId（RPC 失败也记录，避免重投导致业务重复执行）
+        // 只在业务显式调用 ack 后记录（RPC 失败也记录，避免重投导致业务重复执行）
         // 业务失败抛异常且不调 ack 时不会记录，重投后仍正常消费
-        processedAt.put(delivery.messageId(), System.currentTimeMillis());
-        log.debug("Dedup committed: messageId={}", delivery.messageId());
+        processedAt.put(new MessageKey(delivery.queue(), delivery.messageId()), System.currentTimeMillis());
+        log.debug("Dedup committed: queue={}, messageId={}", delivery.queue(), delivery.messageId());
         if (processedAt.size() > pruneThreshold) {
             prune();
         }
