@@ -1,5 +1,7 @@
 package com.arth.sakimq.broker.config;
 
+import com.arth.sakimq.config.Config;
+
 import java.nio.file.Path;
 
 /**
@@ -17,5 +19,12 @@ public record MQConfig(int port, Path dataDirectory, int maxDeliveryCount) {
 
     public static MQConfig defaults() {
         return new MQConfig(50051, Path.of("data"), 3);
+    }
+
+    public static MQConfig from(Config config) {
+        return new MQConfig(
+                config.getInt("sakimq.broker.port", 50051),
+                config.getPath("sakimq.broker.data-directory", Path.of("data")),
+                config.getInt("sakimq.broker.max-delivery-count", 3));
     }
 }

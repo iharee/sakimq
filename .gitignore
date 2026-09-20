@@ -1,6 +1,7 @@
 target/
 data/
 logs/
+sakimq.yaml
 .idea/
 .vscode/
 .DS_Store

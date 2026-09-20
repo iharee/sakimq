@@ -6,6 +6,7 @@ import com.arth.sakimq.broker.core.MonoBroker;
 import com.arth.sakimq.broker.storage.FileWal;
 import com.arth.sakimq.broker.storage.MessageLog;
 import com.arth.sakimq.broker.storage.Recovery;
+import com.arth.sakimq.config.Config;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 
@@ -27,12 +28,12 @@ public final class MQServerImpl implements MQServer {
     }
 
     public static MQServerImpl create(MQConfig config) throws IOException {
-        MessageLog wal = new FileWal(config.dataDirectory().resolve("mq.wal"));
+        MessageLog wal = new FileWal(config.dataDirectory());
         return create(config, new MonoBroker(config, wal), wal);
     }
 
     public static MQServerImpl create(MQConfig config, Broker broker) throws IOException {
-        return create(config, broker, new FileWal(config.dataDirectory().resolve("mq.wal")));
+        return create(config, broker, new FileWal(config.dataDirectory()));
     }
 
     public static MQServerImpl create(MQConfig config, Broker broker, MessageLog wal) {
@@ -80,7 +81,7 @@ public final class MQServerImpl implements MQServer {
     }
 
     public static void main(String[] args) throws Exception {
-        MQServerImpl server = MQServerImpl.create(MQConfig.defaults());
+        MQServerImpl server = MQServerImpl.create(MQConfig.from(Config.load()));
         server.start();
         server.awaitTermination();
     }

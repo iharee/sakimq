@@ -9,25 +9,28 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
-/**
- * 基于追加文件的 Write-Ahead Log，每次追加后立即 fsync
- */
+
 public final class FileWal implements MessageLog {
 
+    private static final String WAL_PREFIX = "mq-";
+    private static final String WAL_SUFFIX = ".wal";
+
+    private final Path directory;
     private final Path path;
     private final FileOutputStream out;
 
-    public FileWal(Path path) {
-        this.path = path;
+    public FileWal(Path directory) {
+        this.directory = directory;
+        this.path = directory.resolve(WAL_PREFIX + System.currentTimeMillis() + WAL_SUFFIX);
         try {
-            if (path.getParent() != null) {
-                Files.createDirectories(path.getParent());
-            }
+            Files.createDirectories(directory);
             this.out = new FileOutputStream(path.toFile(), true);
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to open WAL: " + path, e);
@@ -86,16 +89,34 @@ public final class FileWal implements MessageLog {
         }
     }
 
-    /**    (non-Javadoc)
-     * 扫描并重放全部有效记录；若尾部存在崩溃时未写完的半条记录，将其截断。只能在 Broker 启动、开始接受请求之前调用。
-     * 
+    /**
+     * 扫描并重放数据目录下全部 WAL 段；若某段尾部存在崩溃时未写完的半条记录，将其截断。
+     * 只能在 Broker 启动、开始接受请求之前调用。
+     *
      * @see com.arth.sakimq.broker.storage.MessageLog#recover()
      */
     @Override
     public List<WalRecord> recover() {
-        if (!Files.exists(path)) return List.of();
+        if (!Files.isDirectory(directory)) return List.of();
         List<WalRecord> records = new ArrayList<>();
-        try (RandomAccessFile raf = new RandomAccessFile(path.toFile(), "rw")) {
+        try (DirectoryStream<Path> stream =
+                 Files.newDirectoryStream(directory, WAL_PREFIX + "*" + WAL_SUFFIX)) {
+            List<Path> segments = new ArrayList<>();
+            for (Path segment : stream) {
+                segments.add(segment);
+            }
+            segments.sort(Comparator.comparing(p -> p.getFileName().toString()));
+            for (Path segment : segments) {
+                recoverSegment(segment, records);
+            }
+        } catch (IOException e) {
+            // 目录不可读
+        }
+        return records;
+    }
+
+    private void recoverSegment(Path segment, List<WalRecord> records) {
+        try (RandomAccessFile raf = new RandomAccessFile(segment.toFile(), "rw")) {
             long lastGoodOffset = 0;
             while (true) {
                 long recordStart = raf.getFilePointer();
@@ -120,13 +141,11 @@ public final class FileWal implements MessageLog {
         } catch (IOException e) {
             // 文件不可读
         }
-        return records;
     }
-
 
     /**
      * 读取与 writeDelimitedTo 一致的 protobuf varint 长度前缀
-     * 
+     *
      * @param in
      * @return protobuf varint 长度前缀
      * @throws IOException
