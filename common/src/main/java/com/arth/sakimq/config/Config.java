@@ -43,11 +43,11 @@ public final class Config {
         SmallRyeConfigBuilder builder = new SmallRyeConfigBuilder().addSystemSources();
 
         if (!Files.exists(path)) {
+            // 显式指定的配置文件不存在属于配置错误，fail fast；缺省路径不存在则静默使用默认值
             if (configPath != null && !configPath.isBlank()) {
-                log.warn("Config file not found: {}, using defaults", path);
-            } else {
-                log.debug("No config file found at {}, using defaults", path);
+                throw new ConfigLoadException("Config file not found: " + path + " (set by SAKIMQ_CONFIG)");
             }
+            log.debug("No config file found at {}, using defaults", path);
         } else {
             try {
                 String content = Files.readString(path);
@@ -87,14 +87,14 @@ public final class Config {
         if (v.isEmpty()) {
             throw new InvalidArgumentException("invalid duration: " + value);
         }
-        if (v.charAt(0) == 'P' || v.charAt(0) == 'p') {
-            return Duration.parse(v);
-        }
-        if (v.chars().allMatch(Character::isDigit)) {
-            return Duration.ofMillis(Long.parseLong(v));
-        }
-        String lower = v.toLowerCase();
         try {
+            if (v.charAt(0) == 'P' || v.charAt(0) == 'p') {
+                return Duration.parse(v);
+            }
+            if (v.chars().allMatch(Character::isDigit)) {
+                return Duration.ofMillis(Long.parseLong(v));
+            }
+            String lower = v.toLowerCase();
             if (lower.endsWith("ms")) {
                 return Duration.ofMillis(Long.parseLong(lower.substring(0, lower.length() - 2).trim()));
             }
@@ -106,8 +106,10 @@ public final class Config {
                 case 's' -> Duration.ofSeconds(amount);
                 default -> throw new InvalidArgumentException("invalid duration: " + value);
             };
-        } catch (NumberFormatException e) {
-            throw new InvalidArgumentException("invalid duration: " + value);
+        } catch (InvalidArgumentException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new InvalidArgumentException("invalid duration: " + value, e);
         }
     }
 }

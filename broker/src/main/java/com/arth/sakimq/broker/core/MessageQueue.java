@@ -12,6 +12,7 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import com.arth.sakimq.exception.DuplicateMessageException;
 import com.arth.sakimq.exception.InvalidArgumentException;
@@ -43,7 +44,7 @@ public class MessageQueue {
     public synchronized String publish(Message message) {
         String id = message.messageId();
         if (!messageIds.add(id)) {
-            log.warn("Duplicate message rejected: id={}", id);
+            log.debug("Duplicate message rejected: id={}", id);
             throw new DuplicateMessageException(id);
         }
         ready.add(new QueueEntry(message));
@@ -53,13 +54,25 @@ public class MessageQueue {
 
     /**
      * 将消息放回就绪队列并还原其投递计数，用于恢复消息。
-     * 与 publish 不同，重复 messageId 静默跳过，避免 WAL 中的异常记录导致启动失败。
+     * 与 publish 不同，恢复期的异常记录只告警不抛异常，避免 WAL 中的异常记录导致启动失败。
+     *
+     * @return 是否真的放回了就绪队列；毒消息与重复 messageId 返回 false（已告警）
      */
-    public synchronized void restore(Message message, int deliveryCount) {
+    public synchronized boolean restore(Message message, int deliveryCount) {
+        // 已达到最大投递次数的毒消息不复活：恢复后下一次 consume 仍会被丢弃，直接跳过并告警
+        if (deliveryCount >= maxDeliveryCount) {
+            log.warn("Skipping restore of poison message: messageId={}, queue={}, deliveryCount={}, maxDeliveryCount={}",
+                    message.messageId(), message.queue(), deliveryCount, maxDeliveryCount);
+            return false;
+        }
         String id = message.messageId();
-        if (!messageIds.add(id)) return;
+        if (!messageIds.add(id)) {
+            log.warn("Skipping restore of duplicate messageId: messageId={}, queue={}", id, message.queue());
+            return false;
+        }
         ready.add(new QueueEntry(message, deliveryCount));
         notifyAll();
+        return true;
     }
 
     /**
@@ -132,13 +145,18 @@ public class MessageQueue {
     }
 
     /**
-     * 在锁内原子地确认本次投递，移除 inflight 记录并释放 messageId。
+     * 在锁内原子地确认本次投递：先落盘，再移除 inflight 记录并释放 messageId。
+     * 落盘失败时内存状态不变（消息仍 inflight，超时后按 at-least-once 重投），
+     * 且落盘与内存移除之间不会被 visibility expiry 插入。
      *
+     * @param walAck 落盘回调，在持有队列锁时调用
      * @return 被确认消息的 messageId；若 receiptHandle 已失效（如已被超时重投）则返回 empty
      */
-    public synchronized Optional<String> ack(String receiptHandle) {
-        InflightMessage im = inflight.remove(receiptHandle);
+    public synchronized Optional<String> ack(String receiptHandle, Consumer<String> walAck) {
+        InflightMessage im = inflight.get(receiptHandle);
         if (im == null) return Optional.empty();
+        walAck.accept(im.entry().message.messageId());  // 仍持有锁；落盘失败则内存状态不变
+        inflight.remove(receiptHandle);
         messageIds.remove(im.entry().message.messageId());
         return Optional.of(im.entry().message.messageId());
     }

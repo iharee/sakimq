@@ -5,6 +5,10 @@ package com.arth.sakimq.exception;
  */
 public class WalWriteException extends SakimqException {
 
+    public WalWriteException(String message) {
+        super(message);
+    }
+
     public WalWriteException(String message, Throwable cause) {
         super(message, cause);
     }

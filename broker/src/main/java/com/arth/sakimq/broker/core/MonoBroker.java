@@ -20,6 +20,8 @@ public final class MonoBroker implements Broker {
     private final ConcurrentHashMap<String, MessageQueue> queues = new ConcurrentHashMap<>();
     private final int maxDeliveryCount;
     private final MessageLog wal;
+    // 串行化 createQueue 的 check → WAL → put，队列创建是低频操作，全局锁开销可忽略
+    private final Object createQueueLock = new Object();
 
     public MonoBroker() {
         this(MQConfig.defaults(), null);
@@ -36,24 +38,25 @@ public final class MonoBroker implements Broker {
 
     @Override
     public boolean createQueue(String queue) {
-        if (queues.containsKey(queue)) {
-            log.debug("Queue already exists: {}", queue);
-            return false;
-        }
-        // 先写 wal，再入内存，保证空队列在重启后仍然存在
-        if (wal != null) wal.appendCreateQueue(queue);
-        boolean created = queues.putIfAbsent(queue, new MessageQueue(maxDeliveryCount)) == null;
-        if (created) {
+        // 串行化 check → WAL → put，避免并发 createQueue 产生重复 CREATE_QUEUE WAL 记录
+        synchronized (createQueueLock) {
+            if (queues.containsKey(queue)) {
+                log.debug("Queue already exists: {}", queue);
+                return false;
+            }
+            // 先写 wal，再入内存，保证空队列在重启后仍然存在
+            if (wal != null) wal.appendCreateQueue(queue);
+            queues.put(queue, new MessageQueue(maxDeliveryCount));
             log.info("Queue created: {}", queue);
+            return true;
         }
-        return created;
     }
 
     @Override
     public String publish(String queue, byte[] body) {
         MessageQueue mq = queues.get(queue);
         if (mq == null) {
-            log.warn("Publish rejected: queue not found: {}", queue);
+            log.debug("Publish rejected: queue not found: {}", queue);
             throw new QueueNotFoundException(queue);
         }
         String id = UUID.randomUUID().toString();
@@ -69,7 +72,7 @@ public final class MonoBroker implements Broker {
     public Optional<Delivery> consume(String queue, Duration visibilityTimeout, Duration waitTimeout) {
         MessageQueue mq = queues.get(queue);
         if (mq == null) {
-            log.warn("Consume rejected: queue not found: {}", queue);
+            log.debug("Consume rejected: queue not found: {}", queue);
             throw new QueueNotFoundException(queue);
         }
         Optional<Delivery> delivery = mq.consume(visibilityTimeout, waitTimeout);
@@ -77,8 +80,8 @@ public final class MonoBroker implements Broker {
         if (wal != null) {
             delivery.ifPresent(d -> wal.appendDelivery(d.queue(), d.messageId(), d.deliveryCount()));
         }
-        delivery.ifPresent(d -> log.debug("Delivered message: id={}, queue={}, deliveryCount={}, receiptHandle={}",
-                d.messageId(), d.queue(), d.deliveryCount(), d.receiptHandle()));
+        delivery.ifPresent(d -> log.debug("Delivered message: id={}, queue={}, deliveryCount={}",
+                d.messageId(), d.queue(), d.deliveryCount()));
         return delivery;
     }
 
@@ -86,17 +89,25 @@ public final class MonoBroker implements Broker {
     public boolean ack(String queue, String receiptHandle) {
         MessageQueue mq = queues.get(queue);
         if (mq == null) {
-            log.warn("Ack rejected: queue not found: {}", queue);
+            log.debug("Ack rejected: queue not found: {}", queue);
             throw new QueueNotFoundException(queue);
         }
-        Optional<String> messageId = mq.ack(receiptHandle);
+        // 落盘与内存移除在同一临界区内完成，且 WAL 先行；写失败时消息仍 inflight，超时后重投
+        Optional<String> messageId = mq.ack(receiptHandle, id -> {
+            if (wal != null) wal.appendAck(queue, id);
+        });
         if (messageId.isEmpty()) {
-            log.warn("Ack rejected: unknown or expired receiptHandle: queue={}, receiptHandle={}", queue, receiptHandle);
+            log.debug("Ack rejected: unknown or expired receiptHandle: queue={}, receiptHandlePrefix={}",
+                    queue, abbreviate(receiptHandle));
             return false;
         }
-        if (wal != null) wal.appendAck(queue, messageId.get());  // 最后再写 wal
         log.debug("Ack recorded: queue={}, messageId={}", queue, messageId.get());
         return true;
+    }
+
+    /** receiptHandle 是 ack 的 capability token，日志中只保留前缀 */
+    private static String abbreviate(String s) {
+        return s == null ? "null" : s.length() <= 8 ? s : s.substring(0, 8) + "...";
     }
 
     @Override
@@ -109,8 +120,10 @@ public final class MonoBroker implements Broker {
     @Override
     public void restore(Message message, int deliveryCount) {
         MessageQueue mq = queues.computeIfAbsent(message.queue(), k -> new MessageQueue(maxDeliveryCount));
-        mq.restore(message, deliveryCount);
-        log.debug("Restored message: id={}, queue={}, deliveryCount={}", message.messageId(), message.queue(), deliveryCount);
+        if (mq.restore(message, deliveryCount)) {
+            log.debug("Restored message: id={}, queue={}, deliveryCount={}",
+                    message.messageId(), message.queue(), deliveryCount);
+        }
     }
 
     @Override

@@ -16,6 +16,13 @@ public record MQConfig(int port, Path dataDirectory, int maxDeliveryCount) {
         if (maxDeliveryCount <= 0) {
             throw new InvalidArgumentException("maxDeliveryCount must be positive");
         }
+        // port 允许 0：gRPC 会分配临时端口
+        if (port < 0 || port > 65535) {
+            throw new InvalidArgumentException("port must be between 0 and 65535");
+        }
+        if (dataDirectory == null) {
+            throw new InvalidArgumentException("dataDirectory must not be null");
+        }
     }
 
     public static MQConfig defaults() {

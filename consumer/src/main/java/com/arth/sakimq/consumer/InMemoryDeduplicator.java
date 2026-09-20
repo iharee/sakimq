@@ -60,7 +60,8 @@ public final class InMemoryDeduplicator implements Deduplicator {
 
     @Override
     public void markCommitted(Delivery delivery) {
-        // 只在业务显式 ack 成功后才应记录 messageId，否则业务失败后重投会被自动 ACK 并永久删除
+        // 只在业务显式调用 ack 后记录 messageId（RPC 失败也记录，避免重投导致业务重复执行）
+        // 业务失败抛异常且不调 ack 时不会记录，重投后仍正常消费
         processedAt.put(delivery.messageId(), System.currentTimeMillis());
         log.debug("Dedup committed: messageId={}", delivery.messageId());
         if (processedAt.size() > pruneThreshold) {

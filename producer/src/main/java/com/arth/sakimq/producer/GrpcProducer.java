@@ -2,7 +2,6 @@ package com.arth.sakimq.producer;
 
 import com.arth.sakimq.exception.InvalidArgumentException;
 import com.arth.sakimq.protocol.CreateQueueRequest;
-import com.arth.sakimq.protocol.CreateQueueResponse;
 import com.arth.sakimq.protocol.MQServiceGrpc;
 import com.arth.sakimq.protocol.PublishRequest;
 import com.arth.sakimq.protocol.PublishResponse;

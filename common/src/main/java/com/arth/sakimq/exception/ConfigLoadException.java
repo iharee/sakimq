@@ -5,6 +5,10 @@ package com.arth.sakimq.exception;
  */
 public class ConfigLoadException extends SakimqException {
 
+    public ConfigLoadException(String message) {
+        super(message);
+    }
+
     public ConfigLoadException(String message, Throwable cause) {
         super(message, cause);
     }

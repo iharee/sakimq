@@ -3,6 +3,7 @@ package com.arth.sakimq.broker.storage;
 import com.arth.sakimq.broker.core.Message;
 import com.arth.sakimq.exception.WalCloseException;
 import com.arth.sakimq.exception.WalOpenException;
+import com.arth.sakimq.exception.WalRecoveryException;
 import com.arth.sakimq.exception.WalWriteException;
 import com.arth.sakimq.protocol.WalRecord;
 import com.google.protobuf.ByteString;
@@ -27,6 +28,10 @@ public final class FileWal implements MessageLog {
 
     private static final String WAL_PREFIX = "mq-";
     private static final String WAL_SUFFIX = ".wal";
+    /** 38b5f7b 之前的单文件 WAL，恢复时作为最老的一段处理 */
+    private static final String LEGACY_WAL_NAME = "mq.wal";
+    /** 单条记录上限，防止损坏的长度前缀导致超大数组分配 */
+    private static final int MAX_WAL_RECORD_SIZE = 64 * 1024 * 1024;
 
     private final Path directory;
     private final Path path;
@@ -34,7 +39,7 @@ public final class FileWal implements MessageLog {
 
     public FileWal(Path directory) {
         this.directory = directory;
-        this.path = directory.resolve(WAL_PREFIX + System.currentTimeMillis() + WAL_SUFFIX);
+        this.path = directory.resolve(WAL_PREFIX + nextSegmentTimestamp(directory) + WAL_SUFFIX);
         try {
             Files.createDirectories(directory);
             this.out = new FileOutputStream(path.toFile(), true);
@@ -42,6 +47,34 @@ public final class FileWal implements MessageLog {
             log.error("Failed to open WAL: {}", path, e);
             throw new WalOpenException("Failed to open WAL: " + path, e);
         }
+    }
+
+    /**
+     * 生成严格大于所有既有 segment 的时间戳，保证恢复时按文件名字典序排序等同于写入顺序。
+     * 不直接使用墙钟，避免系统时间回拨导致新 segment 排在旧 segment 之前（跨段 PUBLISH/ACK 顺序颠倒）。
+     */
+    private static long nextSegmentTimestamp(Path directory) {
+        long max = System.currentTimeMillis();
+        if (Files.isDirectory(directory)) {
+            try (DirectoryStream<Path> stream =
+                     Files.newDirectoryStream(directory, WAL_PREFIX + "*" + WAL_SUFFIX)) {
+                for (Path segment : stream) {
+                    String name = segment.getFileName().toString();
+                    String ts = name.substring(WAL_PREFIX.length(), name.length() - WAL_SUFFIX.length());
+                    try {
+                        max = Math.max(max, Long.parseLong(ts));
+                    } catch (NumberFormatException ignored) {
+                        // 非时间戳命名的历史段，忽略
+                    }
+                }
+            } catch (IOException e) {
+                // 回退墙钟会生成排序偏小的段名（恢复顺序错乱）；而列举失败时 recover() 随后同样会 fail closed，
+                // 回退毫无收益，直接 fail fast
+                log.error("Failed to scan existing WAL segments in directory: {}", directory, e);
+                throw new WalOpenException("Failed to scan existing WAL segments in directory: " + directory, e);
+            }
+        }
+        return max + 1;
     }
 
     @Override
@@ -89,6 +122,11 @@ public final class FileWal implements MessageLog {
     private void writeRecord(WalRecord record) {
         log.debug("WAL append: type={}, queue={}, messageId={}, deliveryCount={}",
                 record.getType(), record.getQueue(), record.getMessageId(), record.getDeliveryCount());
+        // 与 recoverSegment 的上限保持一致：写得下去却读不回来的记录会让 broker 重启后 fail closed 拒绝启动
+        int size = record.getSerializedSize();
+        if (size > MAX_WAL_RECORD_SIZE) {
+            throw new WalWriteException("WAL record size " + size + " exceeds limit " + MAX_WAL_RECORD_SIZE);
+        }
         try {
             record.writeDelimitedTo(out);
             out.flush();
@@ -100,7 +138,9 @@ public final class FileWal implements MessageLog {
     }
 
     /**
-     * 扫描并重放数据目录下全部 WAL 段；若某段尾部存在崩溃时未写完的半条记录，将其截断。
+     * 扫描并重放数据目录下全部 WAL 段。只有崩溃时正在写入的那一段（最后一个非空段）
+     * 才可能留下未写完的半条记录，此时截断到上一条完好记录；更早的段出现半条记录
+     * 说明是记录损坏而非崩溃残留，截断会静默删除其后的有效记录，一律 fail closed。
      * 只能在 Broker 启动、开始接受请求之前调用。
      *
      * @see com.arth.sakimq.broker.storage.MessageLog#recover()
@@ -115,21 +155,48 @@ public final class FileWal implements MessageLog {
         try (DirectoryStream<Path> stream =
                  Files.newDirectoryStream(directory, WAL_PREFIX + "*" + WAL_SUFFIX)) {
             List<Path> segments = new ArrayList<>();
-            for (Path segment : stream) {
-                segments.add(segment);
+            // 兼容 38b5f7b 之前的单文件 WAL：文件名不含分隔符，不匹配 mq-*.wal，需显式恢复且恒为最老的一段
+            Path legacy = directory.resolve(LEGACY_WAL_NAME);
+            if (Files.isRegularFile(legacy)) {
+                log.info("Found legacy WAL file {}, recovering as oldest segment", legacy);
+                segments.add(legacy);
             }
-            segments.sort(Comparator.comparing(p -> p.getFileName().toString()));
+            List<Path> named = new ArrayList<>();
+            for (Path segment : stream) {
+                named.add(segment);
+            }
+            named.sort(Comparator.comparing(p -> p.getFileName().toString()));
+            segments.addAll(named);
+
+            // 只有崩溃时正在写入的那一段（最后一个非空段）才可能留下未写完的半条记录。
+            // 更早的段出现半条记录说明是记录损坏而非崩溃残留，截断会静默删除其后的有效记录，必须 fail closed
+            Path active = lastNonEmptySegment(segments);
             for (Path segment : segments) {
-                recoverSegment(segment, records);
+                recoverSegment(segment, records, segment.equals(active));
             }
             log.info("WAL recovery complete: {} records from {} segment(s)", records.size(), segments.size());
         } catch (IOException e) {
+            // 目录存在却无法列出属于错误，不得带着部分数据启动
             log.error("Failed to list WAL segments in directory: {}", directory, e);
+            throw new WalRecoveryException("Failed to list WAL segments in directory: " + directory, e);
         }
         return records;
     }
 
-    private void recoverSegment(Path segment, List<WalRecord> records) {
+    /**
+     * @param segments 按时间顺序排列的段
+     * @return 最后一个非空段，即崩溃时正在写入的那一段；全部为空时返回 null
+     */
+    private static Path lastNonEmptySegment(List<Path> segments) throws IOException {
+        for (int i = segments.size() - 1; i >= 0; i--) {
+            if (Files.size(segments.get(i)) > 0) {
+                return segments.get(i);
+            }
+        }
+        return null;
+    }
+
+    private void recoverSegment(Path segment, List<WalRecord> records, boolean truncatable) {
         try (RandomAccessFile raf = new RandomAccessFile(segment.toFile(), "rw")) {
             long lastGoodOffset = 0;
             while (true) {
@@ -142,20 +209,38 @@ public final class FileWal implements MessageLog {
                     if (size < 0 || raf.getFilePointer() + size > raf.length()) {
                         throw new EOFException("truncated WAL record");
                     }
+                    if (size > MAX_WAL_RECORD_SIZE) {
+                        throw new IOException("WAL record size " + size + " exceeds limit " + MAX_WAL_RECORD_SIZE);
+                    }
                     byte[] data = new byte[size];
                     raf.readFully(data);
                     records.add(WalRecord.parseFrom(data));
-                } catch (IOException e) {
-                    // 半条记录，恢复至上一条完好记录
+                } catch (EOFException e) {
+                    if (!truncatable) {
+                        // 非活动段出现半条记录：截断会连同其后的有效记录一起静默删除，fail closed
+                        log.error("Torn WAL record in non-active segment {} at offset {}, refusing to truncate",
+                                segment.getFileName(), recordStart);
+                        throw new WalRecoveryException("Torn WAL record in non-active segment "
+                                + segment.getFileName() + " at offset " + recordStart, e);
+                    }
+                    // 崩溃时未写完的半条记录（长度前缀或内容读到文件末尾），恢复至上一条完好记录
                     log.warn("Truncated torn WAL record in segment {}, truncating to last good offset {}",
                             segment.getFileName(), lastGoodOffset);
                     raf.setLength(lastGoodOffset);
                     break;
+                } catch (IOException e) {
+                    // 完整记录但内容损坏，或真实 I/O 错误：不能截断，否则会静默丢失后续有效记录，fail closed
+                    log.error("Corrupt WAL record in segment {} at offset {}, refusing to truncate: {}",
+                            segment.getFileName(), recordStart, e.toString());
+                    throw new WalRecoveryException(
+                            "Corrupt WAL record in segment " + segment.getFileName() + " at offset " + recordStart, e);
                 }
                 lastGoodOffset = raf.getFilePointer();
             }
         } catch (IOException e) {
+            // 段文件无法打开/读取：同样 fail closed，避免静默丢失整段数据
             log.error("Failed to read WAL segment: {}", segment, e);
+            throw new WalRecoveryException("Failed to read WAL segment: " + segment, e);
         }
     }
 
@@ -170,6 +255,10 @@ public final class FileWal implements MessageLog {
         int result = 0;
         for (int shift = 0; shift < 32; shift += 7) {
             int b = in.readUnsignedByte();
+            // 第 5 个字节只能贡献 bits 28-31；payload 超出 0x0F 或仍带 continuation bit 均超出 32 位，视为损坏
+            if (shift == 28 && (b & 0xF0) != 0) {
+                throw new IOException("malformed varint");
+            }
             result |= (b & 0x7F) << shift;
             if ((b & 0x80) == 0) {
                 return result;

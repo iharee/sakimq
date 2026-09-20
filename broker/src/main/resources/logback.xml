@@ -5,8 +5,8 @@
         </encoder>
     </appender>
 
-    <!-- 项目自身的日志在开发期输出 DEBUG，便于观察 publish/consume/ack 细节 -->
-    <logger name="com.arth.sakimq" level="DEBUG"/>
+    <!-- 默认 INFO，避免高频路径刷日志；可用环境变量 SAKIMQ_LOG_LEVEL（或 -DSAKIMQ_LOG_LEVEL）覆盖 -->
+    <logger name="com.arth.sakimq" level="${SAKIMQ_LOG_LEVEL:-INFO}"/>
 
     <root level="INFO">
         <appender-ref ref="STDOUT"/>

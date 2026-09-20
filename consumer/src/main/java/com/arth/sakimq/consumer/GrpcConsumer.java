@@ -1,5 +1,6 @@
 package com.arth.sakimq.consumer;
 
+import com.arth.sakimq.config.Config;
 import com.arth.sakimq.exception.InvalidArgumentException;
 import com.arth.sakimq.model.Delivery;
 import com.arth.sakimq.protocol.AckRequest;
@@ -40,6 +41,11 @@ public final class GrpcConsumer implements Consumer {
 
     public GrpcConsumer(String target, Deduplicator deduplicator) {
         this(ManagedChannelBuilder.forTarget(target).usePlaintext().build(), deduplicator);
+    }
+
+
+    public static GrpcConsumer create(String target, Config config) {
+        return new GrpcConsumer(target, InMemoryDeduplicator.from(config));
     }
 
     public GrpcConsumer(ManagedChannel channel, Deduplicator deduplicator) {
@@ -94,20 +100,24 @@ public final class GrpcConsumer implements Consumer {
         if (delivery.receiptHandle() == null || delivery.receiptHandle().isBlank()) {
             throw new InvalidArgumentException("receiptHandle must not be blank");
         }
-        boolean acknowledged = stub.ack(AckRequest.newBuilder()
-                .setQueue(delivery.queue())
-                .setReceiptHandle(delivery.receiptHandle())
-                .build())
-                .getAcknowledged();
-        // 只有 broker 确认 ack 成功才应记录已提交状态！
-        if (acknowledged) {
+        boolean acknowledged;
+        try {
+            acknowledged = stub.ack(AckRequest.newBuilder()
+                    .setQueue(delivery.queue())
+                    .setReceiptHandle(delivery.receiptHandle())
+                    .build())
+                    .getAcknowledged();
+        } finally {
+            // 业务显式 ack 即视为处理成功；RPC 失败也标记，避免重投导致业务重复执行
             if (deduplicator != null) {
                 deduplicator.markCommitted(delivery);
             }
+        }
+        if (acknowledged) {
             log.debug("Ack committed: queue={}, messageId={}", delivery.queue(), delivery.messageId());
         } else {
-            log.warn("Ack not acknowledged: queue={}, messageId={}, receiptHandle={}",
-                    delivery.queue(), delivery.messageId(), delivery.receiptHandle());
+            log.info("Ack not acknowledged: queue={}, messageId={}, receiptHandlePrefix={}",
+                    delivery.queue(), delivery.messageId(), abbreviate(delivery.receiptHandle()));
         }
         return acknowledged;
     }
@@ -136,5 +146,10 @@ public final class GrpcConsumer implements Consumer {
         if (queue == null || queue.isBlank()) {
             throw new InvalidArgumentException("queue must not be blank");
         }
+    }
+
+    /** receiptHandle 是 ack 的 capability token，在日志中保留前缀 */
+    private static String abbreviate(String s) {
+        return s == null ? "null" : s.length() <= 8 ? s : s.substring(0, 8) + "...";
     }
 }
