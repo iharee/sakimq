@@ -17,5 +17,7 @@ public interface Broker {
 
     QueueStats stats(String queue);
 
-    void restore(Message message);
+    void restore(Message message, int deliveryCount);
+
+    void restoreQueue(String queue);
 }

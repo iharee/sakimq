@@ -63,6 +63,8 @@ message WalRecord {
   enum Type {
     PUBLISH = 0;
     ACK = 1;
+    CREATE_QUEUE = 2;
+    DELIVERY = 3;
   }
 
   Type type = 1;
@@ -70,4 +72,5 @@ message WalRecord {
   string message_id = 3;
   bytes body = 4;
   int64 created_at = 5;
+  int32 delivery_count = 6;
 }

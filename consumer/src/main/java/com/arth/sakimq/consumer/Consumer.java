@@ -14,7 +14,7 @@ public interface Consumer extends AutoCloseable {
             Duration waitTimeout
     );
 
-    boolean ack(String queue, String receiptHandle);
+    boolean ack(Delivery delivery);
 
     @Override
     void close();

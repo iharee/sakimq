@@ -9,7 +9,11 @@ final class QueueEntry {
     int deliveryCount;
 
     QueueEntry(Message message) {
+        this(message, 0);
+    }
+
+    QueueEntry(Message message, int deliveryCount) {
         this.message = message;
-        this.deliveryCount = 0;
+        this.deliveryCount = deliveryCount;
     }
 }

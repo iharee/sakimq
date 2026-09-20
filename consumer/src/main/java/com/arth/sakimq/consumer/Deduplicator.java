@@ -6,5 +6,5 @@ public interface Deduplicator {
 
     boolean isDuplicate(Delivery delivery);
 
-    void markProcessed(Delivery delivery);
+    void markCommitted(Delivery delivery);
 }

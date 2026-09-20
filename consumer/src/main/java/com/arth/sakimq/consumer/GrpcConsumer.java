@@ -5,6 +5,8 @@ import com.arth.sakimq.protocol.AckRequest;
 import com.arth.sakimq.protocol.ConsumeRequest;
 import com.arth.sakimq.protocol.ConsumeResponse;
 import com.arth.sakimq.protocol.MQServiceGrpc;
+import com.arth.sakimq.protocol.Message;
+
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 
@@ -65,28 +67,30 @@ public final class GrpcConsumer implements Consumer {
 
             Delivery delivery = toDelivery(response.getDelivery());
             if (deduplicator != null && deduplicator.isDuplicate(delivery)) {
-                // 已处理过的重复消息直接 ack
-                ack(queue, delivery.receiptHandle());
+                // 业务已显式 ack 的重复消息
+                ack(delivery);
                 continue;
-            }
-            if (deduplicator != null) {
-                deduplicator.markProcessed(delivery);
             }
             return Optional.of(delivery);
         }
     }
 
     @Override
-    public boolean ack(String queue, String receiptHandle) {
-        checkQueue(queue);
-        if (receiptHandle == null || receiptHandle.isBlank()) {
+    public boolean ack(Delivery delivery) {
+        checkQueue(delivery.queue());
+        if (delivery.receiptHandle() == null || delivery.receiptHandle().isBlank()) {
             throw new IllegalArgumentException("receiptHandle must not be blank");
         }
-        return stub.ack(AckRequest.newBuilder()
-                .setQueue(queue)
-                .setReceiptHandle(receiptHandle)
+        boolean acknowledged = stub.ack(AckRequest.newBuilder()
+                .setQueue(delivery.queue())
+                .setReceiptHandle(delivery.receiptHandle())
                 .build())
                 .getAcknowledged();
+        // 只有 broker 确认 ack 成功才应记录已提交状态！
+        if (acknowledged && deduplicator != null) {
+            deduplicator.markCommitted(delivery);
+        }
+        return acknowledged;
     }
 
     @Override
@@ -99,7 +103,7 @@ public final class GrpcConsumer implements Consumer {
     }
 
     private static Delivery toDelivery(com.arth.sakimq.protocol.Delivery delivery) {
-        com.arth.sakimq.protocol.Message message = delivery.getMessage();
+        Message message = delivery.getMessage();
         return new Delivery(
                 message.getMessageId(),
                 message.getQueue(),

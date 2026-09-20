@@ -11,6 +11,10 @@ public interface MessageLog extends AutoCloseable {
 
     void appendAck(String queue, String messageId);
 
+    void appendDelivery(String queue, String messageId, int deliveryCount);
+
+    void appendCreateQueue(String queue);
+
     List<WalRecord> recover();
 
     @Override

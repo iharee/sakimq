@@ -31,6 +31,9 @@ public final class MonoBroker implements Broker {
 
     @Override
     public boolean createQueue(String queue) {
+        if (queues.containsKey(queue)) return false;
+        // 先写 wal，再入内存，保证空队列在重启后仍然存在
+        if (wal != null) wal.appendCreateQueue(queue);
         return queues.putIfAbsent(queue, new MessageQueue(maxDeliveryCount)) == null;
     }
 
@@ -50,18 +53,21 @@ public final class MonoBroker implements Broker {
     public Optional<Delivery> consume(String queue, Duration visibilityTimeout, Duration waitTimeout) {
         MessageQueue mq = queues.get(queue);
         if (mq == null) throw new IllegalArgumentException("Queue does not exist: " + queue);
-        return mq.consume(visibilityTimeout, waitTimeout);
+        Optional<Delivery> delivery = mq.consume(visibilityTimeout, waitTimeout);
+        // 投递计数先落盘，避免重启后 deliveryCount 归零导致毒消息被无限重投
+        if (wal != null) {
+            delivery.ifPresent(d -> wal.appendDelivery(d.queue(), d.messageId(), d.deliveryCount()));
+        }
+        return delivery;
     }
 
     @Override
     public boolean ack(String queue, String receiptHandle) {
         MessageQueue mq = queues.get(queue);
         if (mq == null) throw new IllegalArgumentException("Queue does not exist: " + queue);
-        Optional<String> messageId = mq.peekAck(receiptHandle);
+        Optional<String> messageId = mq.ack(receiptHandle);
         if (messageId.isEmpty()) return false;
-        // 先落盘 ack，再移除 inflight
-        if (wal != null) wal.appendAck(queue, messageId.get());
-        mq.ack(receiptHandle);
+        if (wal != null) wal.appendAck(queue, messageId.get());  // 最后再写 wal
         return true;
     }
 
@@ -73,8 +79,13 @@ public final class MonoBroker implements Broker {
     }
 
     @Override
-    public void restore(Message message) {
+    public void restore(Message message, int deliveryCount) {
         MessageQueue mq = queues.computeIfAbsent(message.queue(), k -> new MessageQueue(maxDeliveryCount));
-        mq.publish(message);
+        mq.restore(message, deliveryCount);
+    }
+
+    @Override
+    public void restoreQueue(String queue) {
+        queues.computeIfAbsent(queue, k -> new MessageQueue(maxDeliveryCount));
     }
 }

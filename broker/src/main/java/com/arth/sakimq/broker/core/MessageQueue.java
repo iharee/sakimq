@@ -43,6 +43,17 @@ public class MessageQueue {
     }
 
     /**
+     * 将消息放回就绪队列并还原其投递计数，用于恢复消息。
+     * 与 publish 不同，重复 messageId 静默跳过，避免 WAL 中的异常记录导致启动失败。
+     */
+    public synchronized void restore(Message message, int deliveryCount) {
+        String id = message.messageId();
+        if (!messageIds.add(id)) return;
+        ready.add(new QueueEntry(message, deliveryCount));
+        notifyAll();
+    }
+
+    /**
      * @param visibilityTimeout 消息被投递后在多少时间内对其他消费者不可见，避免竞争者重复消费
      * @param waitTimeout 等待超时时间，若队列为空，则在超过该时间后返回 Optional.empty()
      * @return 返回 Optional<Delivery> 或 Optional.empty()，在无有效消息时返回 Optional.empty()
@@ -109,17 +120,16 @@ public class MessageQueue {
         }
     }
 
-    public synchronized Optional<String> peekAck(String receiptHandle) {
-        InflightMessage im = inflight.get(receiptHandle);
-        if (im == null) return Optional.empty();
-        return Optional.of(im.entry().message.messageId());
-    }
-
-    public synchronized boolean ack(String receiptHandle) {
+    /**
+     * 在锁内原子地确认本次投递，移除 inflight 记录并释放 messageId。
+     *
+     * @return 被确认消息的 messageId；若 receiptHandle 已失效（如已被超时重投）则返回 empty
+     */
+    public synchronized Optional<String> ack(String receiptHandle) {
         InflightMessage im = inflight.remove(receiptHandle);
-        if (im == null) return false;
+        if (im == null) return Optional.empty();
         messageIds.remove(im.entry().message.messageId());
-        return true;
+        return Optional.of(im.entry().message.messageId());
     }
 
     // TODO: 可考虑再使用一个额外的后台线程定期调用本方法

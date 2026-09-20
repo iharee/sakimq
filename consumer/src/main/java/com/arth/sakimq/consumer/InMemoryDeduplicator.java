@@ -34,7 +34,8 @@ public final class InMemoryDeduplicator implements Deduplicator {
     }
 
     @Override
-    public void markProcessed(Delivery delivery) {
+    public void markCommitted(Delivery delivery) {
+        // 只在业务显式 ack 成功后才应记录 messageId，否则业务失败后重投会被自动 ACK 并永久删除
         processedAt.put(delivery.messageId(), System.currentTimeMillis());
         if (processedAt.size() > PRUNE_THRESHOLD) {
             prune();

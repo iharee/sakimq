@@ -56,6 +56,26 @@ public final class FileWal implements MessageLog {
         writeRecord(record);
     }
 
+    @Override
+    public synchronized void appendDelivery(String queue, String messageId, int deliveryCount) {
+        WalRecord record = WalRecord.newBuilder()
+                .setType(WalRecord.Type.DELIVERY)
+                .setQueue(queue)
+                .setMessageId(messageId)
+                .setDeliveryCount(deliveryCount)
+                .build();
+        writeRecord(record);
+    }
+
+    @Override
+    public synchronized void appendCreateQueue(String queue) {
+        WalRecord record = WalRecord.newBuilder()
+                .setType(WalRecord.Type.CREATE_QUEUE)
+                .setQueue(queue)
+                .build();
+        writeRecord(record);
+    }
+
     private void writeRecord(WalRecord record) {
         try {
             record.writeDelimitedTo(out);
