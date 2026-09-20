@@ -109,14 +109,17 @@ public class MessageQueue {
         }
     }
 
-    /**
-     * @return 被确认消息的 messageId；receiptHandle 无效时返回 empty
-     */
-    public synchronized Optional<String> ack(String receiptHandle) {
-        InflightMessage im = inflight.remove(receiptHandle);
+    public synchronized Optional<String> peekAck(String receiptHandle) {
+        InflightMessage im = inflight.get(receiptHandle);
         if (im == null) return Optional.empty();
-        messageIds.remove(im.entry().message.messageId());
         return Optional.of(im.entry().message.messageId());
+    }
+
+    public synchronized boolean ack(String receiptHandle) {
+        InflightMessage im = inflight.remove(receiptHandle);
+        if (im == null) return false;
+        messageIds.remove(im.entry().message.messageId());
+        return true;
     }
 
     // TODO: 可考虑再使用一个额外的后台线程定期调用本方法

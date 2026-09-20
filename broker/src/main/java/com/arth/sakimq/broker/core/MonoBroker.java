@@ -40,7 +40,7 @@ public final class MonoBroker implements Broker {
         if (mq == null) throw new IllegalArgumentException("Queue does not exist: " + queue);
         String id = UUID.randomUUID().toString();
         Message message = Message.of(id, queue, body);
-        // 先写 WAL 再入内存：WAL 写失败则本次发布不生效
+        // 先写 wal，再入内存
         if (wal != null) wal.appendPublish(message);
         mq.publish(message);
         return id;
@@ -57,11 +57,12 @@ public final class MonoBroker implements Broker {
     public boolean ack(String queue, String receiptHandle) {
         MessageQueue mq = queues.get(queue);
         if (mq == null) throw new IllegalArgumentException("Queue does not exist: " + queue);
-        Optional<String> messageId = mq.ack(receiptHandle);
-        messageId.ifPresent(id -> {
-            if (wal != null) wal.appendAck(queue, id);
-        });
-        return messageId.isPresent();
+        Optional<String> messageId = mq.peekAck(receiptHandle);
+        if (messageId.isEmpty()) return false;
+        // 先落盘 ack，再移除 inflight
+        if (wal != null) wal.appendAck(queue, messageId.get());
+        mq.ack(receiptHandle);
+        return true;
     }
 
     @Override

@@ -4,9 +4,10 @@ import com.arth.sakimq.broker.core.Message;
 import com.arth.sakimq.protocol.WalRecord;
 import com.google.protobuf.ByteString;
 
+import java.io.EOFException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
+import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -65,23 +66,65 @@ public final class FileWal implements MessageLog {
         }
     }
 
+    /**    (non-Javadoc)
+     * 扫描并重放全部有效记录；若尾部存在崩溃时未写完的半条记录，将其截断。只能在 Broker 启动、开始接受请求之前调用。
+     * 
+     * @see com.arth.sakimq.broker.storage.MessageLog#recover()
+     */
     @Override
     public List<WalRecord> recover() {
         if (!Files.exists(path)) return List.of();
         List<WalRecord> records = new ArrayList<>();
-        try (InputStream in = Files.newInputStream(path)) {
-            WalRecord record;
-            while ((record = WalRecord.parseDelimitedFrom(in)) != null) {
-                records.add(record);
+        try (RandomAccessFile raf = new RandomAccessFile(path.toFile(), "rw")) {
+            long lastGoodOffset = 0;
+            while (true) {
+                long recordStart = raf.getFilePointer();
+                if (recordStart >= raf.length()) {
+                    break;
+                }
+                try {
+                    int size = readRawVarint32(raf);
+                    if (size < 0 || raf.getFilePointer() + size > raf.length()) {
+                        throw new EOFException("truncated WAL record");
+                    }
+                    byte[] data = new byte[size];
+                    raf.readFully(data);
+                    records.add(WalRecord.parseFrom(data));
+                } catch (IOException e) {
+                    // 半条记录，恢复至上一条完好记录
+                    raf.setLength(lastGoodOffset);
+                    break;
+                }
+                lastGoodOffset = raf.getFilePointer();
             }
         } catch (IOException e) {
-            // 文件尾部可能是崩溃时未写完的半条记录，已解析部分仍然有效
+            // 文件不可读
         }
         return records;
     }
 
+
+    /**
+     * 读取与 writeDelimitedTo 一致的 protobuf varint 长度前缀
+     * 
+     * @param in
+     * @return protobuf varint 长度前缀
+     * @throws IOException
+     */
+    private static int readRawVarint32(RandomAccessFile in) throws IOException {
+        int result = 0;
+        for (int shift = 0; shift < 32; shift += 7) {
+            int b = in.readUnsignedByte();
+            result |= (b & 0x7F) << shift;
+            if ((b & 0x80) == 0) {
+                return result;
+            }
+        }
+        throw new IOException("malformed varint");
+    }
+
     @Override
-    public void close() {
+    public synchronized void close() {
         try {
             out.close();
         } catch (IOException e) {
