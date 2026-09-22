@@ -47,9 +47,16 @@ public final class MonoBroker implements Broker {
         }
     }
 
+    private static void requireUserQueue(String queue) {
+        requireQueue(queue);
+        if (queue.endsWith(DEAD_LETTER_SUFFIX)) {
+            throw new InvalidArgumentException("queue suffix is reserved: " + DEAD_LETTER_SUFFIX);
+        }
+    }
+
     @Override
     public boolean createQueue(String queue) {
-        requireQueue(queue);
+        requireUserQueue(queue);
         createQueueLock.lock();
         try {
             if (queues.containsKey(queue)) {
@@ -91,11 +98,16 @@ public final class MonoBroker implements Broker {
             log.debug("Consume rejected: queue not found: {}", queue);
             throw new QueueNotFoundException(queue);
         }
-        Optional<Delivery> delivery = mq.consume(visibilityTimeout, waitTimeout, message -> deadLetterOrDrop(queue, message));
-        // 投递计数先落盘，避免重启后 deliveryCount 归零导致毒消息被无限重投
-        if (wal != null) {
-            delivery.ifPresent(d -> wal.appendDelivery(d.queue(), d.messageId(), d.deliveryCount()));
-        }
+        Optional<Delivery> delivery = mq.consume(
+                visibilityTimeout,
+                waitTimeout,
+                message -> deadLetterOrDrop(queue, message),
+                deliveryRecord -> {
+                    if (wal != null) {
+                        wal.appendDelivery(deliveryRecord.queue(),
+                                deliveryRecord.messageId(), deliveryRecord.deliveryCount());
+                    }
+                });
         delivery.ifPresent(d -> log.debug("Delivered message: id={}, queue={}, deliveryCount={}",
                 d.messageId(), d.queue(), d.deliveryCount()));
         return delivery;
@@ -103,6 +115,7 @@ public final class MonoBroker implements Broker {
 
     private void deadLetterOrDrop(String queue, Message message) {
         if (queue.endsWith(DEAD_LETTER_SUFFIX)) {
+            if (wal != null) wal.appendDiscard(queue, message.messageId());
             log.warn("Dropping message exhausted in dead-letter queue: messageId={}, queue={}",
                     message.messageId(), queue);
             return;
@@ -111,12 +124,7 @@ public final class MonoBroker implements Broker {
         if (wal != null) {
             wal.appendDeadLetter(queue, message.messageId(), deadLetterQueue);
         }
-        createQueue(deadLetterQueue);
-        MessageQueue target = queues.get(deadLetterQueue);
-        if (target == null) {
-            // 没有移除队列的操作，理论上不可达
-            throw new QueueNotFoundException(deadLetterQueue);
-        }
+        MessageQueue target = ensureQueueInMemory(deadLetterQueue);
         Message dead = new Message(message.messageId(), deadLetterQueue, message.body(), message.createdAt());
         try {
             target.publish(dead);
@@ -172,7 +180,16 @@ public final class MonoBroker implements Broker {
 
     @Override
     public void restoreQueue(String queue) {
-        queues.computeIfAbsent(queue, k -> new MessageQueue(maxDeliveryCount));
+        ensureQueueInMemory(queue);
         log.debug("Restored queue: {}", queue);
+    }
+
+    private MessageQueue ensureQueueInMemory(String queue) {
+        createQueueLock.lock();
+        try {
+            return queues.computeIfAbsent(queue, k -> new MessageQueue(maxDeliveryCount));
+        } finally {
+            createQueueLock.unlock();
+        }
     }
 }

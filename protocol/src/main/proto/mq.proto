@@ -66,6 +66,7 @@ message WalRecord {
     CREATE_QUEUE = 2;
     DELIVERY = 3;
     DEAD_LETTER = 4;
+    DISCARD = 5;
   }
 
   Type type = 1;

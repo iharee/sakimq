@@ -19,9 +19,9 @@
 
 - 队列操作：createQueue / publish / consume / ack / getQueueStats
 - 可见性超时：消息投递后对其他消费者不可见，超时未 ack 自动重投
-- 至少一次投递：publish / delivery / ack / createQueue / deadLetter 均写 WAL 并 fsync，重启后按 WAL 重放；ack 与死信转移都在队列锁内先落盘再改内存，写失败时消息保持可重投状态
+- 至少一次投递：publish / delivery / ack / createQueue / deadLetter / discard 均写 WAL 并 fsync，重启后按 WAL 重放；durable transition 先落盘再改内存，写失败时消息保持可重投状态
 - 崩溃恢复：只截断正在写入那一段尾部未写完的记录；其余损坏、不可读一律 fail closed 拒绝启动
-- 投递上限与死信队列：投递次数超过 `max-delivery-count` 的消息转入派生的死信队列 `<queue>.dlq`。整次转移由一条 WAL 记录表达，重启后消息仍在死信队列里；死信队列自身是终态，其中再次超限的消息仅丢弃告警，不再派生 `<queue>.dlq.dlq`
+- 投递上限与死信队列：投递次数超过 `max-delivery-count` 的消息转入派生的死信队列 `<queue>.dlq`。`.dlq` 是保留后缀，整次转移由一条 WAL 记录表达，重启后消息仍在死信队列里；死信队列自身是终态，其中再次超限的消息持久化丢弃，不再派生 `<queue>.dlq.dlq`
 - 消费端幂等：按 messageId 去重，业务 ack 过的消息重投时直接跳过
 - 分层配置：环境变量 > YAML > 默认值
 - 并发模型：gRPC 服务端的每个请求均运行在一个虚拟线程上（`Executors.newVirtualThreadPerTaskExecutor()`）
@@ -32,7 +32,7 @@
 
 ## TODO
 
-- 死信队列：目标固定按 `<queue>.dlq` 派生，不支持自定义目标；死信消息暂不支持重投回源队列或按消息 TTL 过期清理
+- 死信队列增强：目标固定按 `<queue>.dlq` 派生，不支持自定义目标；死信消息暂不支持重投回源队列或按消息 TTL 过期清理
 - WAL 滚动与压缩：目前只分段、不滚动，恢复时全量读入内存
 - 过期消息的重投依赖下一次 consume 触发，暂未实现周期性重投的后台线程
 - 消费端去重只在内存中，进程重启后失效

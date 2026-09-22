@@ -54,16 +54,10 @@ public class MessageQueue {
 
     /**
      * 将消息放回就绪队列并还原其投递计数，用于恢复消息。
-     * 与 publish 不同，恢复期的异常记录只告警不抛异常，避免 WAL 中的异常记录导致启动失败。
      *
-     * @return 是否真的放回了就绪队列；非法消息与重复 messageId 返回 false（已告警）
+     * @return 是否真的放回了就绪队列；重复 messageId 返回 false
      */
     public synchronized boolean restore(Message message, int deliveryCount) {
-        if (deliveryCount >= maxDeliveryCount) {
-            log.warn("Skipping restore of poison message: messageId={}, queue={}, deliveryCount={}, maxDeliveryCount={}",
-                    message.messageId(), message.queue(), deliveryCount, maxDeliveryCount);
-            return false;
-        }
         String id = message.messageId();
         if (!messageIds.add(id)) {
             log.warn("Skipping restore of duplicate messageId: messageId={}, queue={}", id, message.queue());
@@ -74,14 +68,27 @@ public class MessageQueue {
         return true;
     }
 
+    public Optional<Delivery> consume(Duration visibilityTimeout, Duration waitTimeout, Consumer<Message> onExhausted) {
+        return consume(visibilityTimeout, waitTimeout, onExhausted, delivery -> {
+        });
+    }
+
+    public Optional<Delivery> consume(Duration visibilityTimeout, Duration waitTimeout) {
+        return consume(visibilityTimeout, waitTimeout, message -> {
+        });
+    }
+
     /**
      * @param visibilityTimeout 消息被投递后在多少时间内对其他消费者不可见，避免竞争者重复消费
      * @param waitTimeout 等待超时时间，若队列为空，则在超过该时间后返回 Optional.empty()
-     * @param onExhausted 投递次数超限时的终态回调，在持有本队列锁时调用，由 Broker 决定转入死信队列还是丢弃；
-     *                    回调抛出时条目放回就绪队列，消息不会滞留在内存里，待下次 consume 重试
+     * @param onExhausted 投递次数超限时的终态回调，在持有本队列锁时调用；回调失败时条目放回就绪队列
+     * @param onDelivered 投递记录落盘回调，在进入 inflight 前调用；回调失败时条目放回就绪队列
      * @return 返回 Optional<Delivery> 或 Optional.empty()，在无有效消息时返回 Optional.empty()
      */
-    public Optional<Delivery> consume(Duration visibilityTimeout, Duration waitTimeout, Consumer<Message> onExhausted) {
+    public Optional<Delivery> consume(Duration visibilityTimeout,
+                                      Duration waitTimeout,
+                                      Consumer<Message> onExhausted,
+                                      Consumer<Delivery> onDelivered) {
         if (visibilityTimeout == null || visibilityTimeout.isNegative() || visibilityTimeout.isZero())
             throw new InvalidArgumentException("invalid visibilityTimeout");
         if (waitTimeout == null || waitTimeout.isNegative())
@@ -97,18 +104,12 @@ public class MessageQueue {
                 // 2. 尝试取一条可见消息
                 QueueEntry entry = ready.poll();
                 if (entry != null) {
-                    entry.deliveryCount++;
-                    if (entry.deliveryCount > maxDeliveryCount) {
-                        // 投递预算耗尽。此刻条目已脱离 ready、尚未进入 inflight，唯一的内存痕迹是 messageIds；
-                        // 回调与 ack 同形：持锁落盘（含 fsync）后才改内存
-                        log.warn("Message exceeded maxDeliveryCount: messageId={}, queue={}, deliveryCount={}, maxDeliveryCount={}",
-                                entry.message.messageId(), entry.message.queue(), entry.deliveryCount, maxDeliveryCount);
+                    int nextDeliveryCount = entry.deliveryCount + 1;
+                    if (nextDeliveryCount > maxDeliveryCount) {
                         try {
                             onExhausted.accept(entry.message);
                         } catch (RuntimeException e) {
-                            // 落盘失败等：把条目放回就绪队列，否则滞留在"既不在 ready 也不在 inflight"
-                            // 的孤儿状态，重启时又被 restore 的投递上限检查跳过，导致静默丢弃消息
-                            ready.add(entry);
+                            ready.addFirst(entry);
                             throw e;
                         }
                         messageIds.remove(entry.message.messageId());
@@ -116,16 +117,24 @@ public class MessageQueue {
                     }
                     String receiptHandle = UUID.randomUUID().toString();  // receiptHandle 标识本次投递
                     long deadlineNanos = System.nanoTime() + visibilityTimeout.toNanos();
-                    InflightMessage im = new InflightMessage(entry, receiptHandle, deadlineNanos);
-                    inflight.put(receiptHandle, im);
-                    expiry.add(im);
-                    return Optional.of(new Delivery(
+                    Delivery delivery = new Delivery(
                             entry.message.messageId(),
                             entry.message.queue(),
                             entry.message.body(),
                             entry.message.createdAt(),
                             receiptHandle,
-                            entry.deliveryCount));
+                            nextDeliveryCount);
+                    try {
+                        onDelivered.accept(delivery);
+                    } catch (RuntimeException e) {
+                        ready.addFirst(entry);
+                        throw e;
+                    }
+                    entry.deliveryCount = nextDeliveryCount;
+                    InflightMessage im = new InflightMessage(entry, receiptHandle, deadlineNanos);
+                    inflight.put(receiptHandle, im);
+                    expiry.add(im);
+                    return Optional.of(delivery);
                 }
 
                 // 3. 空队列

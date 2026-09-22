@@ -2,6 +2,7 @@ package com.arth.sakimq.broker.storage;
 
 import com.arth.sakimq.broker.core.Broker;
 import com.arth.sakimq.broker.core.Message;
+import com.arth.sakimq.exception.WalRecoveryException;
 import com.arth.sakimq.protocol.WalRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,17 +47,28 @@ public final class Recovery {
                     pending.remove(key);
                     deliveryCounts.remove(key);
                 }
+                case DISCARD -> {
+                    pending.remove(key);
+                    deliveryCounts.remove(key);
+                }
                 case DEAD_LETTER -> {
                     Message source = pending.remove(key);
                     deliveryCounts.remove(key);
                     if (source == null) {
-                        log.warn("WAL DEAD_LETTER record without pending source message: queue={}, messageId={}",
-                                queue, record.getMessageId());
+                        MessageKey targetKey = new MessageKey(record.getTargetQueue(), record.getMessageId());
+                        if (!pending.containsKey(targetKey)) {
+                            throw new WalRecoveryException("WAL DEAD_LETTER record without source or target message: "
+                                    + queue + "/" + record.getMessageId());
+                        }
                     } else {
                         String target = record.getTargetQueue();
                         broker.restoreQueue(target);
-                        pending.put(new MessageKey(target, source.messageId()),
-                                new Message(source.messageId(), target, source.body(), source.createdAt()));
+                        MessageKey targetKey = new MessageKey(target, source.messageId());
+                        if (!pending.containsKey(targetKey)) {
+                            pending.put(targetKey,
+                                    new Message(source.messageId(), target, source.body(), source.createdAt()));
+                            deliveryCounts.put(targetKey, 0);
+                        }
                         log.debug("Replayed dead-letter transfer: messageId={}, from={}, to={}",
                                 source.messageId(), queue, target);
                     }

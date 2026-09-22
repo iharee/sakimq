@@ -88,7 +88,7 @@ public final class FileWal implements MessageLog {
         }
         requireNonBlank(record.getQueue(), "queue", record);
         switch (record.getType()) {
-            case PUBLISH, ACK, DELIVERY -> {
+            case PUBLISH, ACK, DELIVERY, DISCARD -> {
                 requireNonBlank(record.getMessageId(), "messageId", record);
                 if (record.getType() == WalRecord.Type.DELIVERY && record.getDeliveryCount() <= 0) {
                     throw new WalRecoveryException("WAL DELIVERY record with non-positive deliveryCount: "
@@ -163,6 +163,16 @@ public final class FileWal implements MessageLog {
                 .setQueue(queue)
                 .setMessageId(messageId)
                 .setTargetQueue(targetQueue)
+                .build();
+        writeRecord(record);
+    }
+
+    @Override
+    public synchronized void appendDiscard(String queue, String messageId) {
+        WalRecord record = WalRecord.newBuilder()
+                .setType(WalRecord.Type.DISCARD)
+                .setQueue(queue)
+                .setMessageId(messageId)
                 .build();
         writeRecord(record);
     }
