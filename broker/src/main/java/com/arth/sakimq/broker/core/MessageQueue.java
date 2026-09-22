@@ -77,9 +77,11 @@ public class MessageQueue {
     /**
      * @param visibilityTimeout 消息被投递后在多少时间内对其他消费者不可见，避免竞争者重复消费
      * @param waitTimeout 等待超时时间，若队列为空，则在超过该时间后返回 Optional.empty()
+     * @param onExhausted 投递次数超限时的终态回调，在持有本队列锁时调用，由 Broker 决定转入死信队列还是丢弃；
+     *                    回调抛出时条目放回就绪队列，消息不会滞留在内存里，待下次 consume 重试
      * @return 返回 Optional<Delivery> 或 Optional.empty()，在无有效消息时返回 Optional.empty()
      */
-    public Optional<Delivery> consume(Duration visibilityTimeout, Duration waitTimeout) {
+    public Optional<Delivery> consume(Duration visibilityTimeout, Duration waitTimeout, Consumer<Message> onExhausted) {
         if (visibilityTimeout == null || visibilityTimeout.isNegative() || visibilityTimeout.isZero())
             throw new InvalidArgumentException("invalid visibilityTimeout");
         if (waitTimeout == null || waitTimeout.isNegative())
@@ -97,9 +99,18 @@ public class MessageQueue {
                 if (entry != null) {
                     entry.deliveryCount++;
                     if (entry.deliveryCount > maxDeliveryCount) {
-                        // TODO: 死信队列
-                        log.warn("Message dropped after exceeding maxDeliveryCount: messageId={}, queue={}, deliveryCount={}, maxDeliveryCount={}",
+                        // 投递预算耗尽。此刻条目已脱离 ready、尚未进入 inflight，唯一的内存痕迹是 messageIds；
+                        // 回调与 ack 同形：持锁落盘（含 fsync）后才改内存
+                        log.warn("Message exceeded maxDeliveryCount: messageId={}, queue={}, deliveryCount={}, maxDeliveryCount={}",
                                 entry.message.messageId(), entry.message.queue(), entry.deliveryCount, maxDeliveryCount);
+                        try {
+                            onExhausted.accept(entry.message);
+                        } catch (RuntimeException e) {
+                            // 落盘失败等：把条目放回就绪队列，否则滞留在"既不在 ready 也不在 inflight"
+                            // 的孤儿状态，重启时又被 restore 的投递上限检查跳过，导致静默丢弃消息
+                            ready.add(entry);
+                            throw e;
+                        }
                         messageIds.remove(entry.message.messageId());
                         continue;
                     }

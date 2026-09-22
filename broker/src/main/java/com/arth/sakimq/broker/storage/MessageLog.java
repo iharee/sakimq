@@ -15,6 +15,8 @@ public interface MessageLog extends AutoCloseable {
 
     void appendCreateQueue(String queue);
 
+    void appendDeadLetter(String queue, String messageId, String targetQueue);
+
     List<WalRecord> recover();
 
     @Override

@@ -72,8 +72,6 @@ public final class FileWal implements MessageLog {
                     }
                 }
             } catch (IOException e) {
-                // 回退墙钟会生成排序偏小的段名（恢复顺序错乱）；而列举失败时 recover() 随后同样会 fail closed，
-                // 回退毫无收益，直接 fail fast
                 log.error("Failed to scan existing WAL segments in directory: {}", directory, e);
                 throw new WalOpenException("Failed to scan existing WAL segments in directory: " + directory, e);
             }
@@ -82,10 +80,7 @@ public final class FileWal implements MessageLog {
     }
 
     /**
-     * 校验记录的业务不变量。损坏的记录可能"刚好还能 parse 成 protobuf"（位翻转落在 enum、空字段或长度上），
-     * 只靠 parseFrom 发现不了；放行的话会静默产生幽灵消息、空名队列，因此一律 fail closed。
-     * <p>下列不变量与写入侧一一对应：四种 append 都带非空 queue，PUBLISH/ACK/DELIVERY 另带非空 messageId，
-     * DELIVERY 的 deliveryCount 至少为 1。</p>
+     * 校验记录的业务不变量，用以检查数据完整性
      */
     private static void validateRecord(WalRecord record) {
         if (record.getType() == WalRecord.Type.UNRECOGNIZED) {
@@ -98,6 +93,14 @@ public final class FileWal implements MessageLog {
                 if (record.getType() == WalRecord.Type.DELIVERY && record.getDeliveryCount() <= 0) {
                     throw new WalRecoveryException("WAL DELIVERY record with non-positive deliveryCount: "
                             + record.getDeliveryCount());
+                }
+            }
+            case DEAD_LETTER -> {
+                requireNonBlank(record.getMessageId(), "messageId", record);
+                requireNonBlank(record.getTargetQueue(), "targetQueue", record);
+                if (record.getTargetQueue().equals(record.getQueue())) {
+                    throw new WalRecoveryException("WAL DEAD_LETTER record whose targetQueue equals its queue: "
+                            + record.getQueue());
                 }
             }
             default -> {
@@ -149,6 +152,17 @@ public final class FileWal implements MessageLog {
         WalRecord record = WalRecord.newBuilder()
                 .setType(WalRecord.Type.CREATE_QUEUE)
                 .setQueue(queue)
+                .build();
+        writeRecord(record);
+    }
+
+    @Override
+    public synchronized void appendDeadLetter(String queue, String messageId, String targetQueue) {
+        WalRecord record = WalRecord.newBuilder()
+                .setType(WalRecord.Type.DEAD_LETTER)
+                .setQueue(queue)
+                .setMessageId(messageId)
+                .setTargetQueue(targetQueue)
                 .build();
         writeRecord(record);
     }

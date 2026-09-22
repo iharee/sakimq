@@ -3,12 +3,16 @@ package com.arth.sakimq.broker.storage;
 import com.arth.sakimq.broker.core.Broker;
 import com.arth.sakimq.broker.core.Message;
 import com.arth.sakimq.protocol.WalRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 public final class Recovery {
+
+    private static final Logger log = LoggerFactory.getLogger(Recovery.class);
 
     private Recovery() {
     }
@@ -41,6 +45,21 @@ public final class Recovery {
                 case ACK -> {
                     pending.remove(key);
                     deliveryCounts.remove(key);
+                }
+                case DEAD_LETTER -> {
+                    Message source = pending.remove(key);
+                    deliveryCounts.remove(key);
+                    if (source == null) {
+                        log.warn("WAL DEAD_LETTER record without pending source message: queue={}, messageId={}",
+                                queue, record.getMessageId());
+                    } else {
+                        String target = record.getTargetQueue();
+                        broker.restoreQueue(target);
+                        pending.put(new MessageKey(target, source.messageId()),
+                                new Message(source.messageId(), target, source.body(), source.createdAt()));
+                        log.debug("Replayed dead-letter transfer: messageId={}, from={}, to={}",
+                                source.messageId(), queue, target);
+                    }
                 }
                 default -> {
                     // CREATE_QUEUE 已在上方统一恢复；未知类型忽略

@@ -2,6 +2,7 @@ package com.arth.sakimq.broker.core;
 
 import com.arth.sakimq.broker.config.MQConfig;
 import com.arth.sakimq.broker.storage.MessageLog;
+import com.arth.sakimq.exception.DuplicateMessageException;
 import com.arth.sakimq.exception.InvalidArgumentException;
 import com.arth.sakimq.exception.QueueNotFoundException;
 import com.arth.sakimq.model.Delivery;
@@ -19,6 +20,8 @@ import java.util.concurrent.locks.ReentrantLock;
 public final class MonoBroker implements Broker {
 
     private static final Logger log = LoggerFactory.getLogger(MonoBroker.class);
+
+    private static final String DEAD_LETTER_SUFFIX = ".dlq";
 
     private final ConcurrentHashMap<String, MessageQueue> queues = new ConcurrentHashMap<>();
     private final int maxDeliveryCount;
@@ -88,7 +91,7 @@ public final class MonoBroker implements Broker {
             log.debug("Consume rejected: queue not found: {}", queue);
             throw new QueueNotFoundException(queue);
         }
-        Optional<Delivery> delivery = mq.consume(visibilityTimeout, waitTimeout);
+        Optional<Delivery> delivery = mq.consume(visibilityTimeout, waitTimeout, message -> deadLetterOrDrop(queue, message));
         // 投递计数先落盘，避免重启后 deliveryCount 归零导致毒消息被无限重投
         if (wal != null) {
             delivery.ifPresent(d -> wal.appendDelivery(d.queue(), d.messageId(), d.deliveryCount()));
@@ -96,6 +99,32 @@ public final class MonoBroker implements Broker {
         delivery.ifPresent(d -> log.debug("Delivered message: id={}, queue={}, deliveryCount={}",
                 d.messageId(), d.queue(), d.deliveryCount()));
         return delivery;
+    }
+
+    private void deadLetterOrDrop(String queue, Message message) {
+        if (queue.endsWith(DEAD_LETTER_SUFFIX)) {
+            log.warn("Dropping message exhausted in dead-letter queue: messageId={}, queue={}",
+                    message.messageId(), queue);
+            return;
+        }
+        String deadLetterQueue = queue + DEAD_LETTER_SUFFIX;
+        if (wal != null) {
+            wal.appendDeadLetter(queue, message.messageId(), deadLetterQueue);
+        }
+        createQueue(deadLetterQueue);
+        MessageQueue target = queues.get(deadLetterQueue);
+        if (target == null) {
+            // 没有移除队列的操作，理论上不可达
+            throw new QueueNotFoundException(deadLetterQueue);
+        }
+        Message dead = new Message(message.messageId(), deadLetterQueue, message.body(), message.createdAt());
+        try {
+            target.publish(dead);
+        } catch (DuplicateMessageException e) {
+            log.warn("Dead-letter target already holds messageId={}, keeping the existing copy: queue={}",
+                    message.messageId(), deadLetterQueue);
+        }
+        log.warn("Dead-lettered message: messageId={}, from={}, to={}", message.messageId(), queue, deadLetterQueue);
     }
 
     @Override

@@ -65,6 +65,7 @@ message WalRecord {
     ACK = 1;
     CREATE_QUEUE = 2;
     DELIVERY = 3;
+    DEAD_LETTER = 4;
   }
 
   Type type = 1;
@@ -73,4 +74,5 @@ message WalRecord {
   bytes body = 4;
   int64 created_at = 5;
   int32 delivery_count = 6;
+  string target_queue = 7;
 }
